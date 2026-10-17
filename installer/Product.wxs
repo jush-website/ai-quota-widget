@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AI 額度小工具的 MSI 安裝程式（WiX v5）。由 installer\build.ps1 產生，不要直接 wix build。
+  - 個人安裝（免管理員）：%LocalAppData%\Programs\ai-quota-widget，程式要寫自己的設定與記錄檔
+  - 64 位元：32 位元 PowerShell 會被轉向 SysWOW64，找不到 nvidia-smi
+  - 升級先裝新版再移除舊版（afterInstallExecute），元件 GUID 不變，使用者的樣式／釘選／位置設定得以保留
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="AI 額度小工具" Manufacturer="jush-website" Version="$(var.Version)"
+           UpgradeCode="D9A92E70-12B4-4D91-AEEF-461F904EEF99" Scope="perUser" Language="1028" Codepage="950">
+    <MajorUpgrade Schedule="afterInstallExecute" DowngradeErrorMessage="已經安裝了較新的版本。" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="AppIcon" SourceFile="out\stage\app.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/jush-website/ai-quota-widget" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="ai-quota-widget">
+          <Directory Id="LogsDir" Name="logs" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="MenuDir" Name="AI 額度小工具" />
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+    <StandardDirectory Id="StartupFolder" />
+
+    <Files Directory="INSTALLFOLDER" Include="out\stage\**" />
+
+    <!-- 捷徑名稱與 install-startup.ps1 相同：之後執行「設定」重建時是覆寫同一個檔案，不會多出一份 -->
+    <Component Id="Shortcuts" Directory="MenuDir" Guid="3F2B7C1E-5A64-4C8B-9E2D-7A1C0B6F4D21">
+      <Shortcut Id="MenuWidget" Name="AI 額度小工具" Description="開啟右下角的額度與效能小工具"
+                Target="[System64Folder]wscript.exe" Arguments="&quot;[INSTALLFOLDER]startup.vbs&quot;"
+                WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+      <Shortcut Id="MenuSetup" Name="AI 額度小工具 設定" Description="連結 Claude 帳號、開放手機存取、重建捷徑"
+                Target="[INSTALLFOLDER]啟動儀表板.bat" WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+      <Shortcut Id="DesktopWidget" Directory="DesktopFolder" Name="AI Usage Widget"
+                Target="[System64Folder]wscript.exe" Arguments="&quot;[INSTALLFOLDER]startup.vbs&quot;"
+                WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+      <Shortcut Id="StartupWidget" Directory="StartupFolder" Name="AI Usage Dashboard"
+                Target="[System64Folder]wscript.exe" Arguments="&quot;[INSTALLFOLDER]startup.vbs&quot;"
+                WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+      <RemoveFolder Id="RemoveMenuDir" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\jush-website\ai-quota-widget" Name="shortcuts" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- 解除安裝時清掉執行期產生的檔案（記錄、PID、小工具設定），資料夾才刪得乾淨。升級時此元件沿用，不會觸發 -->
+    <Component Id="Cleanup" Directory="INSTALLFOLDER" Guid="8C41D5A2-0F3E-4B7A-A6D9-52E8B1C7F390">
+      <RemoveFile Id="RemoveStateFiles" Name="*" On="uninstall" />
+      <RemoveFile Id="RemoveLogFiles" Directory="LogsDir" Name="*" On="uninstall" />
+      <RemoveFolder Id="RemoveLogsDir" Directory="LogsDir" On="uninstall" />
+      <RemoveFolder Id="RemoveInstallDir" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\jush-website\ai-quota-widget" Name="cleanup" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- 換檔前先關掉這個資料夾裡正在執行的伺服器與小工具，避免「檔案使用中」。
+         立即執行的 WixQuietExec 固定讀 WixQuietExecCmdLine；含 [屬性] 的 {…} 會被 MSI 當選擇性區塊拿掉大括號，所以寫成 [\{] [\}] -->
+    <SetProperty Id="WixQuietExecCmdLine" Before="StopApp" Sequence="execute"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;Get-CimInstance Win32_Process | Where-Object [\{] $_.ProcessId -ne $PID -and $_.CommandLine -like '*[INSTALLFOLDER]*' [\}] | ForEach-Object [\{] Stop-Process -Id $_.ProcessId -Force [\}]&quot;" />
+    <CustomAction Id="StopApp" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="immediate" Return="ignore" />
+
+    <!-- 裝好後直接開啟小工具（等同按開始功能表的捷徑） -->
+    <CustomAction Id="LaunchApp" Directory="INSTALLFOLDER" Execute="immediate" Return="asyncNoWait"
+                  ExeCommand="&quot;[System64Folder]wscript.exe&quot; &quot;[INSTALLFOLDER]startup.vbs&quot;" />
+
+    <InstallExecuteSequence>
+      <Custom Action="StopApp" Before="InstallValidate" />
+      <Custom Action="LaunchApp" After="InstallFinalize" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

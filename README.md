@@ -9,14 +9,28 @@
 
 ## 下載與使用
 
-1. 到 [Releases](https://github.com/jush-website/ai-quota-widget/releases/latest) 下載最新的 `ai-quota-widget-*-windows.zip`。
-2. 解壓縮到固定的位置（建議不要放在 OneDrive 等同步資料夾）。
-3. 雙擊 `啟動儀表板.bat`。
+到 [Releases](https://github.com/jush-website/ai-quota-widget/releases/latest) 下載，兩種擇一：
+
+### 安裝程式 `.msi`（推薦）
+
+1. 下載 `ai-quota-widget-*-windows.msi`，雙擊安裝（不需要管理員權限，裝在 `%LocalAppData%\Programs\ai-quota-widget`）。
+   - 安裝程式沒有數位簽章，Windows 可能顯示「Windows 已保護您的電腦」：點「其他資訊」→「仍要執行」。
+2. 裝好會自動開啟小工具，並建立開始功能表、桌面與開機自動啟動捷徑。
+3. 要連結 Claude 帳號或讓手機連線：開始功能表 →「AI 額度小工具 設定」。
+
+更新：直接安裝新版的 `.msi`，設定會保留。解除安裝：「設定 → 應用程式」找「AI 額度小工具」。
+
+### 可攜版 `.zip`
+
+1. 下載 `ai-quota-widget-*-windows.zip`，解壓縮到固定的位置（建議不要放在 OneDrive 等同步資料夾）。
+2. 雙擊 `啟動儀表板.bat`。
    - 第一次執行會建立桌面捷徑與開機自動啟動。
    - 若要讓手機連線，會詢問一次管理員權限來開放區網防火牆；按「否」也不影響電腦本機使用。
    - 若電腦有 Claude Code 但還沒登入，畫面會引導用自己的帳號完成官方 OAuth 登入。
 
-之後換新版：先雙擊舊資料夾的 `停止儀表板.bat`，解壓縮新版，再在新資料夾雙擊一次 `啟動儀表板.bat`。
+換新版：先雙擊舊資料夾的 `停止儀表板.bat`，解壓縮新版，再在新資料夾雙擊一次 `啟動儀表板.bat`。
+
+> 兩種方式擇一使用就好；同時裝的話，開機自動啟動會以最後設定的那一個為準。
 
 完整說明（右鍵選單、收合、資料來源、多人使用、安全設定）請看 [使用說明.md](使用說明.md)。
 
@@ -34,7 +48,7 @@
 
 ## 解除安裝
 
-依序雙擊 `停止儀表板.bat`、`取消自動啟動.bat`、`關閉手機存取.bat`，再刪除資料夾與桌面上的「AI Usage Widget」捷徑。
+MSI 版：「設定 → 應用程式」解除安裝即可，捷徑與記錄檔會一併移除。可攜版：依序雙擊 `停止儀表板.bat`、`取消自動啟動.bat`、`關閉手機存取.bat`，再刪除資料夾與桌面上的「AI Usage Widget」捷徑。
 
 ## 從原始碼執行
 
@@ -45,6 +59,8 @@ npm start      # 啟動伺服器（http://localhost:3456）
 npm test       # 執行測試
 powershell -STA -ExecutionPolicy Bypass -File .\widget.ps1   # 開啟桌面小工具
 ```
+
+建置 MSI：安裝 WiX v5（`dotnet tool install --global wix --version 5.0.2`、`wix extension add --global WixToolset.Util.wixext/5.0.2`），把可攜版的 `node.exe` 放到 `runtime\`，再執行 `installer\build.ps1`，輸出在 `installer\out\`。
 
 ## 聲明
 

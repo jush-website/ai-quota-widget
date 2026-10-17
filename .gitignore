@@ -9,6 +9,9 @@ logs/
 .widget-pinned
 .widget-top
 
+# MSI 建置產物（由 installer\build.ps1 產生，發布到 Releases）
+installer/out/
+
 # 開發工具的工作資料夾
 .claude-flow/
 .deep-research/
