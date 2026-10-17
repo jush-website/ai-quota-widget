@@ -8,7 +8,8 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="AI 額度小工具" Manufacturer="jush-website" Version="$(var.Version)"
            UpgradeCode="D9A92E70-12B4-4D91-AEEF-461F904EEF99" Scope="perUser" Language="1028" Codepage="950">
-    <MajorUpgrade Schedule="afterInstallExecute" DowngradeErrorMessage="已經安裝了較新的版本。" />
+    <!-- AllowSameVersionUpgrades：同版本重裝也取代舊的，不會並排登記成兩份 -->
+    <MajorUpgrade Schedule="afterInstallExecute" AllowSameVersionUpgrades="yes" DowngradeErrorMessage="已經安裝了較新的版本。" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Icon Id="AppIcon" SourceFile="out\stage\app.ico" />

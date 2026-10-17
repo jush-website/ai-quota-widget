@@ -94,41 +94,56 @@ $Sampler.Runspace = $Runspace
   <Border CornerRadius="10" Background="#E6161A20" BorderBrush="#33FFFFFF" BorderThickness="1">
     <Grid>
       <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="16"/>
+        <ColumnDefinition Name="HandleCol" Width="16"/>
         <ColumnDefinition/>
       </Grid.ColumnDefinitions>
-      <Border Name="Handle" Background="#1AFFFFFF" CornerRadius="9,0,0,9" Cursor="Hand" ToolTip="收合／展開">
-        <StackPanel VerticalAlignment="Center">
-          <TextBlock Name="Arrow" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10" Foreground="#AAFFFFFF" HorizontalAlignment="Center"/>
-          <StackPanel Name="Dots" Margin="0,6,0,0"/>
+      <Grid.RowDefinitions>
+        <RowDefinition/>
+        <RowDefinition Name="HandleRow" Height="0"/>
+      </Grid.RowDefinitions>
+      <Border Name="Handle" Background="#1AFFFFFF" CornerRadius="9,0,0,9" Cursor="Hand">
+        <StackPanel Name="HandleBody" VerticalAlignment="Center" HorizontalAlignment="Center">
+          <TextBlock Name="Arrow" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10" Foreground="#AAFFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          <StackPanel Name="Dots" Margin="0,6,0,0" VerticalAlignment="Center"/>
         </StackPanel>
       </Border>
-      <StackPanel Grid.Column="1" Margin="10,10,12,10">
+      <StackPanel Name="Body" Grid.Column="1" Margin="10,10,12,10">
         <Grid Margin="0,0,0,6">
           <TextBlock Text="AI 額度 · 效能" Foreground="#99FFFFFF" FontSize="11"/>
           <TextBlock Name="Status" HorizontalAlignment="Right" Foreground="#99FFFFFF" FontSize="11"/>
         </Grid>
-        <StackPanel Name="Rows"/>
+        <WrapPanel Name="Rows"/>
       </StackPanel>
     </Grid>
   </Border>
 </Window>
 '@
 $Window = [Windows.Markup.XamlReader]::Load((New-Object Xml.XmlNodeReader $Xaml))
-$Rows = $Window.FindName('Rows')
-$Status = $Window.FindName('Status')
-$Handle = $Window.FindName('Handle')
-$Arrow = $Window.FindName('Arrow')
-$Dots = $Window.FindName('Dots')
+foreach ($Name in 'Rows', 'Status', 'Handle', 'HandleBody', 'Arrow', 'Dots', 'Body', 'HandleCol', 'HandleRow') {
+  Set-Variable -Name $Name -Value $Window.FindName($Name)
+}
 $Converter = New-Object Windows.Media.BrushConverter
 $Invariant = [Globalization.CultureInfo]::InvariantCulture
 
-# 樣式：bar 條狀、gauge 指針、text 純數字；存在資料夾內，下次沿用
+# 樣式：bar 條狀、gauge 指針、text 純數字；位置：side 右側、top 頂部。都存在資料夾內，下次沿用
 $StyleFile = Join-Path $PSScriptRoot '.widget-style'
 $Style = 'bar'
 try { $Saved = (Get-Content -LiteralPath $StyleFile -Raw -ErrorAction Stop).Trim(); if ($Saved -in 'bar', 'gauge', 'text') { $Style = $Saved } } catch {}
-# 內容寬 = 視窗寬 - 40（把手 16、邊距 22、邊框 2）：條狀軌道 106、指針 3 格 × 70
-$StyleWidth = @{ bar = 284; gauge = 250; text = 184 }
+$EdgeFile = Join-Path $PSScriptRoot '.widget-edge'
+$Edge = 'side'
+try { if ((Get-Content -LiteralPath $EdgeFile -Raw -ErrorAction Stop).Trim() -eq 'top') { $Edge = 'top' } } catch {}
+
+# 每個項目固定寬度，內容區是 WrapPanel：右側模式一欄往下排，頂部模式橫向多欄
+$CellWidth = @{ bar = 244; gauge = 70; text = 144 }   # 條狀：標籤 78 + 軌道 106 + 數值 60
+function Get-ColumnWidth { $CellWidth[$script:Style] + $(if ($script:Edge -eq 'top' -and $script:Style -ne 'gauge') { 16 } else { 0 }) }
+function Get-WindowWidth {
+  if ($script:Edge -eq 'top') {
+    $Columns = switch ($script:Style) { 'bar' { 3 } 'text' { 4 } default { [math]::Max(1, [math]::Min(10, $Cells.Count)) } }
+    return $Columns * (Get-ColumnWidth) + 26   # 左右邊距 24 + 邊框 2
+  }
+  $Columns = if ($script:Style -eq 'gauge') { 3 } else { 1 }
+  return $Columns * (Get-ColumnWidth) + 40     # 把手 16 + 邊距 22 + 邊框 2
+}
 
 $Brushes = @{}
 function Get-Brush([string]$Color) {
@@ -147,10 +162,16 @@ function New-Text([string]$Text, [double]$Size, [string]$Color) {
   return $Block
 }
 
-# 元件只在項目清單或樣式改變時建立一次，之後每秒只改數值，避免整個重繪造成閃爍
+function Get-CellMargin([double]$Top, [double]$Bottom) {
+  $Side = if ($script:Edge -eq 'top' -and $script:Style -ne 'gauge') { 8 } else { 0 }
+  return New-Object Windows.Thickness($Side, $Top, $Side, $Bottom)
+}
+
+# 元件只在項目清單、樣式或位置改變時建立一次，之後每秒只改數值，避免整個重繪造成閃爍
 function New-BarCell($Item, [bool]$Gap) {
   $Grid = New-Object Windows.Controls.Grid
-  $Grid.Margin = New-Object Windows.Thickness(0, ($(if ($Gap) { 8 } else { 2 })), 0, 2)
+  $Grid.Width = $CellWidth.bar
+  $Grid.Margin = Get-CellMargin ($(if ($Gap) { 8 } else { 2 })) 2
   foreach ($W in 78, 1, 60) {
     $Col = New-Object Windows.Controls.ColumnDefinition
     $Col.Width = if ($W -eq 1) { New-Object Windows.GridLength(1, 'Star') } else { New-Object Windows.GridLength($W) }
@@ -175,7 +196,7 @@ function New-BarCell($Item, [bool]$Gap) {
 function New-GaugeCell($Item) {
   # 半圓儀表：圓心 (28,30)、半徑 24，0% 在左、100% 在右
   $Panel = New-Object Windows.Controls.StackPanel
-  $Panel.Width = 70; $Panel.Margin = New-Object Windows.Thickness(0, 2, 0, 6)
+  $Panel.Width = $CellWidth.gauge; $Panel.Margin = Get-CellMargin 2 6
   $Canvas = New-Object Windows.Controls.Canvas
   $Canvas.Width = 56; $Canvas.Height = 33
   $Arcs = foreach ($Color in '#26FFFFFF', '#00000000') {
@@ -203,7 +224,8 @@ function New-GaugeCell($Item) {
 
 function New-TextCell($Item, [bool]$Gap) {
   $Grid = New-Object Windows.Controls.Grid
-  $Grid.Margin = New-Object Windows.Thickness(0, ($(if ($Gap) { 5 } else { 0 })), 0, 0)
+  $Grid.Width = $CellWidth.text
+  $Grid.Margin = Get-CellMargin ($(if ($Gap) { 5 } else { 0 })) 0
   $Grid.Children.Add((New-Text $Item.Label 11 '#CCFFFFFF')) | Out-Null
   $Value = New-Text '' 11 '#66FFFFFF'
   $Value.HorizontalAlignment = 'Right'
@@ -215,7 +237,8 @@ function New-TextCell($Item, [bool]$Gap) {
 # ponytail: 透明視窗每格動畫都要整窗重繪，限 20fps 省 CPU；還嫌耗就改成只在收合時播放
 function New-Dot([int]$Index) {
   $Dot = New-Object Windows.Shapes.Ellipse
-  $Dot.Width = 6; $Dot.Height = 6; $Dot.Margin = New-Object Windows.Thickness(0, 2, 0, 2)
+  $Dot.Width = 6; $Dot.Height = 6
+  $Dot.Margin = if ($script:Edge -eq 'top') { New-Object Windows.Thickness(2, 0, 2, 0) } else { New-Object Windows.Thickness(0, 2, 0, 2) }
   $Dot.Fill = Get-Brush '#66FFFFFF'
   return $Dot
 }
@@ -305,54 +328,79 @@ $Cells = New-Object Collections.Generic.List[object]
 $Signature = ''
 function Update-Widget {
   $Items = @(Get-Items)
-  $Sig = $script:Style + '|' + (($Items | ForEach-Object { "$($_.Group)/$($_.Label)" }) -join ',')
+  $Sig = "$($script:Style)|$($script:Edge)|" + (($Items | ForEach-Object { "$($_.Group)/$($_.Label)" }) -join ',')
   if ($Sig -ne $script:Signature) {
     $script:Signature = $Sig
     $Rows.Children.Clear()
+    $Dots.Children.Clear()
     $Cells.Clear()
     $Previous = $null
-    $Wrap = $null
     foreach ($Item in $Items) {
-      $Gap = $null -ne $Previous -and $Item.Group -ne $Previous
-      switch ($script:Style) {
-        'gauge' {
-          # 指針不分組，三個一列連續排（每格有文字標籤）
-          if (-not $Wrap) { $Wrap = New-Object Windows.Controls.WrapPanel; $Rows.Children.Add($Wrap) | Out-Null }
-          $Cell = New-GaugeCell $Item; $Wrap.Children.Add($Cell.Root) | Out-Null
-        }
-        'text' { $Cell = New-TextCell $Item $Gap; $Rows.Children.Add($Cell.Root) | Out-Null }
-        default { $Cell = New-BarCell $Item $Gap; $Rows.Children.Add($Cell.Root) | Out-Null }
+      # 分組間距只在右側直排時有意義；頂部橫排、指針格子不加
+      $Gap = $script:Edge -eq 'side' -and $null -ne $Previous -and $Item.Group -ne $Previous
+      $Cell = switch ($script:Style) {
+        'gauge' { New-GaugeCell $Item }
+        'text' { New-TextCell $Item $Gap }
+        default { New-BarCell $Item $Gap }
       }
+      $Rows.Children.Add($Cell.Root) | Out-Null
       $Cell.Index = $Cells.Count
       $Cell.Dot = New-Dot $Cell.Index
       $Cell.Alert = $null
-      if ($Cells.Count -eq 0) { $Dots.Children.Clear() }
       $Dots.Children.Add($Cell.Dot) | Out-Null
       $Cells.Add($Cell)
       $Previous = $Item.Group
     }
   }
   for ($I = 0; $I -lt $Items.Count; $I++) { Set-Cell $Cells[$I] $Items[$I] }
-  if ($Window.Width -ne $StyleWidth[$script:Style]) { $Window.Width = $StyleWidth[$script:Style] }
+  $Width = Get-WindowWidth
+  if ($Window.Width -ne $Width) { $Window.Width = $Width }
   $Status.Text = if ($State.offline) { '服務離線' } else { (Get-Date).ToString('HH:mm') }
 }
 
-# 位置：展開時貼齊右下角；收合時滑到螢幕右緣，只露出左側把手
-# 釘選＝固定展開；未釘選＝平常收合，滑鼠移過把手才滑出來。狀態存在資料夾內
+# 右側：把手在左邊（直的）；頂部：把手移到下緣（橫的），燈號跟著轉橫排
+function Apply-Edge {
+  $IsTop = $script:Edge -eq 'top'
+  $HandleCol.Width = New-Object Windows.GridLength($(if ($IsTop) { 0 } else { 16 }))
+  $HandleRow.Height = New-Object Windows.GridLength($(if ($IsTop) { 16 } else { 0 }))
+  [Windows.Controls.Grid]::SetRow($Handle, $(if ($IsTop) { 1 } else { 0 }))
+  [Windows.Controls.Grid]::SetColumnSpan($Handle, $(if ($IsTop) { 2 } else { 1 }))
+  [Windows.Controls.Grid]::SetColumn($Body, $(if ($IsTop) { 0 } else { 1 }))
+  [Windows.Controls.Grid]::SetColumnSpan($Body, $(if ($IsTop) { 2 } else { 1 }))
+  $Handle.CornerRadius = if ($IsTop) { New-Object Windows.CornerRadius(0, 0, 9, 9) } else { New-Object Windows.CornerRadius(9, 0, 0, 9) }
+  $HandleBody.Orientation = if ($IsTop) { 'Horizontal' } else { 'Vertical' }
+  $Dots.Orientation = $HandleBody.Orientation
+  $Dots.Margin = if ($IsTop) { New-Object Windows.Thickness(8, 0, 0, 0) } else { New-Object Windows.Thickness(0, 6, 0, 0) }
+  $Body.Margin = if ($IsTop) { New-Object Windows.Thickness(12, 10, 12, 6) } else { New-Object Windows.Thickness(10, 10, 12, 10) }
+}
+
+# 釘選＝固定展開；未釘選＝平常收合，滑鼠移過把手才滑出來
 $PinFile = Join-Path $PSScriptRoot '.widget-pinned'
 $Pinned = $true
 try { if ((Get-Content -LiteralPath $PinFile -Raw -ErrorAction Stop).Trim() -eq '0') { $Pinned = $false } } catch {}
 $Dragged = $false
 $Collapsed = -not $Pinned
-# 把手可沿右緣上下拖；拖過的高度存在 .widget-top（DIP），沒拖過就貼底
+# 把手可沿邊緣拖：右側存高度 .widget-top，頂部存水平位置 .widget-left（DIP）；沒拖過就用預設位置
+function Read-Number([string]$File) {
+  try { return [double]::Parse((Get-Content -LiteralPath $File -Raw -ErrorAction Stop).Trim(), $Invariant) } catch { return $null }
+}
 $TopFile = Join-Path $PSScriptRoot '.widget-top'
-$CustomTop = $null
-try { $CustomTop = [double]::Parse((Get-Content -LiteralPath $TopFile -Raw -ErrorAction Stop).Trim(), [Globalization.CultureInfo]::InvariantCulture) } catch {}
+$LeftFile = Join-Path $PSScriptRoot '.widget-left'
+$CustomTop = Read-Number $TopFile
+$CustomLeft = Read-Number $LeftFile
 function Get-Dock {
   $Area = [Windows.SystemParameters]::WorkArea
-  # 未釘選的滑出預覽要貼齊螢幕右緣：游標停在把手上，滑出後仍在面板內，才不會一出來就判定離開又收回
-  $Left = if ($script:Collapsed) { $Area.Right - 17 } elseif (-not $script:Pinned) { $Area.Right - $Window.ActualWidth } else { $Area.Right - $Window.ActualWidth - 12 }
-  $Top = if ($null -ne $script:CustomTop) { [math]::Min([math]::Max($script:CustomTop, $Area.Top), $Area.Bottom - $Window.ActualHeight) } else { $Area.Bottom - $Window.ActualHeight - 12 }
+  $W = $Window.ActualWidth; $H = $Window.ActualHeight
+  if ($script:Edge -eq 'top') {
+    # 頂部：預設置中；收合時往上滑，只露出下緣 17px 的把手。展開一律貼齊上緣，游標停在把手上滑出後仍在面板內
+    # ponytail: 上方若還有另一台螢幕，收合的部分會出現在那台；需要時改成依所在螢幕計算
+    $Left = if ($null -ne $script:CustomLeft) { [math]::Min([math]::Max($script:CustomLeft, $Area.Left), $Area.Right - $W) } else { $Area.Left + ($Area.Width - $W) / 2 }
+    $Top = if ($script:Collapsed) { $Area.Top - $H + 17 } else { $Area.Top }
+    return @{ Left = $Left; Top = $Top }
+  }
+  # 右側：未釘選的滑出預覽要貼齊螢幕右緣：游標停在把手上，滑出後仍在面板內，才不會一出來就判定離開又收回
+  $Left = if ($script:Collapsed) { $Area.Right - 17 } elseif (-not $script:Pinned) { $Area.Right - $W } else { $Area.Right - $W - 12 }
+  $Top = if ($null -ne $script:CustomTop) { [math]::Min([math]::Max($script:CustomTop, $Area.Top), $Area.Bottom - $H) } else { $Area.Bottom - $H - 12 }
   return @{ Left = $Left; Top = $Top }
 }
 function Get-MouseDip {
@@ -365,7 +413,7 @@ function Get-MouseDip {
 # 參考型別，讓動畫完成事件（閉包）也能讀寫。滑進滑出可能在動畫途中反向觸發：
 # 新動畫會取代舊的，只有代號仍是最新的那個動畫完成時才寫入最終位置
 $Slide = @{ Until = [datetime]::MinValue }
-$Drag = @{ Active = $false; Moved = $false; StartY = 0; Grab = 0 }
+$Drag = @{ Active = $false; Moved = $false; Start = 0; Grab = 0 }
 function Move-ToCorner {
   if ($script:Dragged -or $Drag.Active -or (Get-Date) -lt $Slide.Until) { return }
   $Dock = Get-Dock
@@ -384,8 +432,8 @@ function Start-Slide($Property, [double]$To) {
   $W.BeginAnimation($Property, $Anim)
 }
 function Update-Handle {
-  # 收合：左箭頭；展開時顯示圖釘，亮＝已釘選、暗＝滑鼠移開就會收回
-  $Arrow.Text = if ($script:Collapsed) { [string][char]0xE76B } else { [string][char]0xE718 }
+  # 收合：箭頭指向滑出方向（右側往左、頂部往下）；展開時顯示圖釘，亮＝已釘選、暗＝滑鼠移開就會收回
+  $Arrow.Text = if (-not $script:Collapsed) { [string][char]0xE718 } elseif ($script:Edge -eq 'top') { [string][char]0xE70D } else { [string][char]0xE76B }
   $Arrow.Foreground = Get-Brush $(if ($script:Pinned -and -not $script:Collapsed) { '#FFFFFFFF' } else { '#88FFFFFF' })
   $Handle.ToolTip = if ($script:Pinned) { '已釘選：點一下取消（改為自動收合）' } else { '點一下釘選（固定展開）' }
 }
@@ -402,26 +450,45 @@ function Set-Pinned([bool]$Value) {
   try { Set-Content -LiteralPath $PinFile -Value ([int]$Value) -Encoding ascii } catch {}
   Set-Collapsed (-not $Value)
 }
-# 把手：點一下切換釘選；按住上下拖超過 4px 則沿右緣移動
+function Set-Edge([string]$Value) {
+  $script:Edge = $Value
+  try { Set-Content -LiteralPath $EdgeFile -Value $Value -Encoding ascii } catch {}
+  Apply-Edge
+  Update-Widget            # 位置進了簽章，會重建格子與燈號並換寬度
+  $Window.UpdateLayout()   # 先算出新寬高，Get-Dock 才會用到正確尺寸
+  Set-Collapsed $script:Collapsed
+}
+# 把手：點一下切換釘選；按住沿邊緣拖超過 4px 則移動（右側上下、頂部左右）
+function Get-DragAxis {
+  if ($script:Edge -eq 'top') { return @{ Property = [Windows.Window]::LeftProperty; Key = 'X' } }
+  return @{ Property = [Windows.Window]::TopProperty; Key = 'Y' }
+}
 $Handle.Add_MouseLeftButtonDown({
   param($Sender, $E)
   $E.Handled = $true
   $Mouse = Get-MouseDip
   if (-not $Mouse) { return }
-  $Slide['Top'] = 'drag'  # 讓進行中的上下動畫完成時不要蓋掉拖曳位置
-  $Window.BeginAnimation([Windows.Window]::TopProperty, $null)
-  $Drag.Active = $true; $Drag.Moved = $false; $Drag.StartY = $Mouse.Y; $Drag.Grab = $Mouse.Y - $Window.Top
+  $Axis = Get-DragAxis
+  $Slide[$Axis.Property.Name] = 'drag'  # 讓進行中的動畫完成時不要蓋掉拖曳位置
+  $Window.BeginAnimation($Axis.Property, $null)
+  $Drag.Active = $true; $Drag.Moved = $false; $Drag.Start = $Mouse[$Axis.Key]; $Drag.Grab = $Mouse[$Axis.Key] - $Window.GetValue($Axis.Property)
   [void]$Handle.CaptureMouse()
 })
 $Handle.Add_MouseMove({
   if (-not $Drag.Active) { return }
   $Mouse = Get-MouseDip
   if (-not $Mouse) { return }
-  if (-not $Drag.Moved -and [math]::Abs($Mouse.Y - $Drag.StartY) -lt 4) { return }
+  $Axis = Get-DragAxis
+  if (-not $Drag.Moved -and [math]::Abs($Mouse[$Axis.Key] - $Drag.Start) -lt 4) { return }
   $Drag.Moved = $true
   $Area = [Windows.SystemParameters]::WorkArea
-  $script:CustomTop = [math]::Min([math]::Max($Mouse.Y - $Drag.Grab, $Area.Top), $Area.Bottom - $Window.ActualHeight)
-  $Window.Top = $script:CustomTop
+  if ($script:Edge -eq 'top') {
+    $script:CustomLeft = [math]::Min([math]::Max($Mouse.X - $Drag.Grab, $Area.Left), $Area.Right - $Window.ActualWidth)
+    $Window.Left = $script:CustomLeft
+  } else {
+    $script:CustomTop = [math]::Min([math]::Max($Mouse.Y - $Drag.Grab, $Area.Top), $Area.Bottom - $Window.ActualHeight)
+    $Window.Top = $script:CustomTop
+  }
 })
 $Handle.Add_MouseLeftButtonUp({
   param($Sender, $E)
@@ -430,7 +497,8 @@ $Handle.Add_MouseLeftButtonUp({
   $Drag.Active = $false
   $Handle.ReleaseMouseCapture()
   if ($Drag.Moved) {
-    try { Set-Content -LiteralPath $TopFile -Value ($script:CustomTop.ToString([Globalization.CultureInfo]::InvariantCulture)) -Encoding ascii } catch {}
+    $File, $Value = if ($script:Edge -eq 'top') { $LeftFile, $script:CustomLeft } else { $TopFile, $script:CustomTop }
+    try { Set-Content -LiteralPath $File -Value ($Value.ToString($Invariant)) -Encoding ascii } catch {}
     $Hover.Suppress = $true  # 放開時游標還在把手上：等游標離開過，下次移入才滑出
   } else { Set-Pinned (-not $script:Pinned) }
 })
@@ -458,28 +526,36 @@ $HoverTimer.Start()
 $Menu = New-Object Windows.Controls.ContextMenu
 $Open = New-Object Windows.Controls.MenuItem; $Open.Header = '開啟完整儀表板'
 $Open.Add_Click({ Start-Process "http://localhost:$Port" })
-$Corner = New-Object Windows.Controls.MenuItem; $Corner.Header = '回到右下角'
+$Corner = New-Object Windows.Controls.MenuItem; $Corner.Header = '回到預設位置'
 $Corner.Add_Click({
-  $script:CustomTop = $null
-  if (Test-Path -LiteralPath $TopFile) { [IO.File]::Delete($TopFile) }
+  $script:CustomTop = $null; $script:CustomLeft = $null
+  foreach ($File in $TopFile, $LeftFile) { if (Test-Path -LiteralPath $File) { [IO.File]::Delete($File) } }
   Set-Pinned $true
 })
 $Quit = New-Object Windows.Controls.MenuItem; $Quit.Header = '關閉小工具'
 $Quit.Add_Click({ $Window.Close() })
-$StyleMenu = New-Object Windows.Controls.MenuItem; $StyleMenu.Header = '樣式'
-foreach ($Option in @(@('bar', '條狀'), @('gauge', '指針'), @('text', '純數字'))) {
-  $Choice = New-Object Windows.Controls.MenuItem
-  $Choice.Header = $Option[1]; $Choice.Tag = $Option[0]; $Choice.IsChecked = ($Option[0] -eq $Style)
-  $Choice.Add_Click({
-    param($Sender)
-    $script:Style = $Sender.Tag
-    try { Set-Content -LiteralPath $StyleFile -Value $script:Style -Encoding ascii } catch {}
-    foreach ($Other in $StyleMenu.Items) { $Other.IsChecked = ($Other.Tag -eq $script:Style) }
-    Update-Widget
-  })
-  $StyleMenu.Items.Add($Choice) | Out-Null
+function New-ChoiceMenu([string]$Header, [object[]]$Options, [string]$Current, [scriptblock]$OnPick) {
+  $Parent = New-Object Windows.Controls.MenuItem; $Parent.Header = $Header
+  foreach ($Option in $Options) {
+    $Choice = New-Object Windows.Controls.MenuItem
+    $Choice.Header = $Option[1]; $Choice.Tag = $Option[0]; $Choice.IsChecked = ($Option[0] -eq $Current)
+    $Choice.Add_Click({
+      param($Sender)
+      foreach ($Other in $Sender.Parent.Items) { $Other.IsChecked = ($Other -eq $Sender) }
+      & $OnPick $Sender.Tag
+    }.GetNewClosure())
+    $Parent.Items.Add($Choice) | Out-Null
+  }
+  return $Parent
 }
-$Menu.Items.Add($Open) | Out-Null; $Menu.Items.Add($StyleMenu) | Out-Null; $Menu.Items.Add($Corner) | Out-Null; $Menu.Items.Add($Quit) | Out-Null
+$StyleMenu = New-ChoiceMenu '樣式' @(@('bar', '條狀'), @('gauge', '指針'), @('text', '純數字')) $Style {
+  param($Value)
+  $script:Style = $Value
+  try { Set-Content -LiteralPath $StyleFile -Value $Value -Encoding ascii } catch {}
+  Update-Widget
+}
+$EdgeMenu = New-ChoiceMenu '位置' @(@('side', '右側'), @('top', '頂部')) $Edge { param($Value) Set-Edge $Value }
+foreach ($Item in $Open, $StyleMenu, $EdgeMenu, $Corner, $Quit) { $Menu.Items.Add($Item) | Out-Null }
 $Window.ContextMenu = $Menu
 
 $Timer = New-Object Windows.Threading.DispatcherTimer
@@ -505,6 +581,7 @@ $Timer.Add_Tick({
   Move-ToCorner
 })
 $Timer.Start()
+Apply-Edge
 Update-Widget
 Update-Handle
 

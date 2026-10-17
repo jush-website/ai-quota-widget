@@ -166,9 +166,13 @@ if ($PortOwner) {
   Write-Host "Port $RequestedPort is in use by another program. Using port $Port instead." -ForegroundColor Yellow
 }
 
-$FirewallScript = Join-Path $PSScriptRoot 'firewall.ps1'
-if (Test-Path -LiteralPath $FirewallScript) {
-  try { & $FirewallScript -Ensure -Port $Port } catch { Write-Host 'Phone firewall permission was not enabled. Dashboard startup will continue.' -ForegroundColor Yellow }
+# Phone (LAN) access only. Querying firewall rules takes several seconds, so it runs after the
+# server and widget are already up instead of delaying them.
+function Ensure-PhoneFirewall {
+  $FirewallScript = Join-Path $PSScriptRoot 'firewall.ps1'
+  if (Test-Path -LiteralPath $FirewallScript) {
+    try { & $FirewallScript -Ensure -Port $Port } catch { Write-Host 'Phone firewall permission was not enabled. Dashboard startup will continue.' -ForegroundColor Yellow }
+  }
 }
 
 $env:PORT = $Port
@@ -198,8 +202,10 @@ if ($Background) {
   Get-UsageUrls | Where-Object { $_ -notlike 'http://localhost:*' } | ForEach-Object { Write-Host "LAN URL: $_" }
   Write-Host 'Use the stop dashboard launcher to stop the service.'
   if ($App) { Open-AppWindow $Port }
+  Ensure-PhoneFirewall
   if ($Launcher) { Show-LauncherDialog }
   exit 0
 }
 
+Ensure-PhoneFirewall
 node src/server.js

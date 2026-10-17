@@ -8,6 +8,8 @@ logs/
 .widget-style
 .widget-pinned
 .widget-top
+.widget-left
+.widget-edge
 
 # MSI 建置產物（由 installer\build.ps1 產生，發布到 Releases）
 installer/out/

@@ -11,12 +11,13 @@ if (-not (Test-Path -LiteralPath (Join-Path $Root 'runtime\node.exe'))) { throw 
 
 $Out = Join-Path $PSScriptRoot 'out'
 $Stage = Join-Path $Out 'stage'
-if (Test-Path -LiteralPath $Out) { [IO.Directory]::Delete($Out, $true) }
+# Remove-Item -Force: OneDrive marks synced folders read-only, which [IO.Directory]::Delete refuses
+if (Test-Path -LiteralPath $Out) { Remove-Item -LiteralPath $Out -Recurse -Force }
 New-Item -ItemType Directory -Path $Stage | Out-Null
 
 # Same exclusions as the portable zip: per-machine state, dev folders, the installer itself, tests.
 $Skip = 'logs', '.claude-flow', '.deep-research', 'node_modules', '.git', '.gitignore', 'installer', 'test',
-  '.usage.pid', '.env', '.widget-style', '.widget-pinned', '.widget-top'
+  '.usage.pid', '.env', '.widget-style', '.widget-pinned', '.widget-top', '.widget-left', '.widget-edge'
 Get-ChildItem -LiteralPath $Root -Force | Where-Object { $Skip -notcontains $_.Name } |
   ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $Stage $_.Name) -Recurse -Force }
 $Logo = Join-Path $Stage 'public\codex.png'   # unused third-party logo, never ship it
