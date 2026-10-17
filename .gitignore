@@ -1,0 +1,18 @@
+# 內附的 Node.js 執行檔太大，只放在 Releases 的可攜版 zip
+runtime/
+
+# 執行記錄與各台電腦自己的狀態
+logs/
+.usage.pid
+.env
+.widget-style
+.widget-pinned
+.widget-top
+
+# 開發工具的工作資料夾
+.claude-flow/
+.deep-research/
+node_modules/
+
+# 未使用、且為第三方商標的圖檔
+public/codex.png

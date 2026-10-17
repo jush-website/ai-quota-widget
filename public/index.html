@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>AI 額度儀表板</title>
+  <link rel="stylesheet" href="/styles.css?v=1.0.2">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div class="eyebrow"><span class="pulse"></span> LAN LIVE</div>
+      <div class="header-row">
+        <div>
+          <h1 id="title">AI 額度儀表板</h1>
+          <p>Codex 與 Claude 的本機即時配額</p>
+        </div>
+        <div class="status" id="status">正在連線…</div>
+      </div>
+    </header>
+
+    <section id="login" class="login hidden" aria-labelledby="login-title">
+      <div>
+        <span class="label">PRIVATE ACCESS</span>
+        <h2 id="login-title">輸入存取密碼</h2>
+        <p>密碼只會暫存在這個瀏覽器分頁。</p>
+      </div>
+      <form id="login-form">
+        <input id="access-key" type="password" autocomplete="current-password" placeholder="存取密碼" required>
+        <button>開啟儀表板</button>
+      </form>
+      <div id="login-error" class="error" role="alert"></div>
+    </section>
+
+    <section id="dashboard" class="providers" aria-live="polite"></section>
+
+    <footer>
+      <span>資料只在此電腦與區域網路間傳送</span>
+      <span class="refresh-info"><span id="updated">—</span><span id="next-refresh">下次更新 —</span></span>
+    </footer>
+  </main>
+  <script type="module" src="/app.js?v=1.0.3"></script>
+</body>
+</html>

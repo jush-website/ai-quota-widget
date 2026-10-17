@@ -1,0 +1,14 @@
+{
+  "name": "lan-ai-usage",
+  "version": "1.0.12",
+  "private": true,
+  "description": "Codex and Claude LAN usage dashboard",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
