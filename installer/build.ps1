@@ -31,4 +31,17 @@ Push-Location -LiteralPath $PSScriptRoot
 try { wix build Product.wxs -arch x64 -ext WixToolset.Util.wixext -d "Version=$Version" -o $Msi }
 finally { Pop-Location }
 if ($LASTEXITCODE) { throw "wix build failed ($LASTEXITCODE)" }
-Get-Item -LiteralPath $Msi
+
+# Portable zip from the same staged files, wrapped in one top-level folder.
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+$Prefix = "ai-quota-widget-v$Version-windows"
+$ZipPath = Join-Path $Out "$Prefix.zip"
+$Zip = [IO.Compression.ZipFile]::Open($ZipPath, 'Create')
+try {
+  Get-ChildItem -LiteralPath $Stage -Recurse -File -Force | ForEach-Object {
+    $Relative = $_.FullName.Substring($Stage.Length + 1).Replace('\', '/')
+    [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($Zip, $_.FullName, "$Prefix/$Relative", 'Optimal')
+  }
+} finally { $Zip.Dispose() }
+
+Get-Item -LiteralPath $Msi, $ZipPath
