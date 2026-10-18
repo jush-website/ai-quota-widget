@@ -326,8 +326,15 @@ function Get-Items {
 
 $Cells = New-Object Collections.Generic.List[object]
 $Signature = ''
+# 使用者勾掉不想看的項目：存在 .widget-hidden（UTF-8，一行一個項目名稱）
+$HiddenFile = Join-Path $PSScriptRoot '.widget-hidden'
+$Hidden = New-Object 'System.Collections.Generic.HashSet[string]'
+try { foreach ($Line in Get-Content -LiteralPath $HiddenFile -Encoding UTF8 -ErrorAction Stop) { if ($Line.Trim()) { [void]$Hidden.Add($Line.Trim()) } } } catch {}
+function Save-Hidden { try { Set-Content -LiteralPath $HiddenFile -Value @($Hidden) -Encoding UTF8 } catch {} }
+$AllItems = @()
 function Update-Widget {
-  $Items = @(Get-Items)
+  $script:AllItems = @(Get-Items)
+  $Items = @($script:AllItems | Where-Object { -not $Hidden.Contains($_.Label) })
   $Sig = "$($script:Style)|$($script:Edge)|" + (($Items | ForEach-Object { "$($_.Group)/$($_.Label)" }) -join ',')
   if ($Sig -ne $script:Signature) {
     $script:Signature = $Sig
@@ -555,7 +562,35 @@ $StyleMenu = New-ChoiceMenu '樣式' @(@('bar', '條狀'), @('gauge', '指針'),
   Update-Widget
 }
 $EdgeMenu = New-ChoiceMenu '位置' @(@('side', '右側'), @('top', '頂部')) $Edge { param($Value) Set-Edge $Value }
-foreach ($Item in $Open, $StyleMenu, $EdgeMenu, $Corner, $Quit) { $Menu.Items.Add($Item) | Out-Null }
+# 顯示項目：每次打開選單時依目前的項目重建，打勾＝顯示；點了不關選單，可以連續勾
+$ShowMenu = New-Object Windows.Controls.MenuItem; $ShowMenu.Header = '顯示項目'
+function Update-ShowMenu {
+  $ShowMenu.Items.Clear()
+  $All = New-Object Windows.Controls.MenuItem; $All.Header = '全部顯示'; $All.StaysOpenOnClick = $true
+  $All.Add_Click({
+    $Hidden.Clear(); Save-Hidden
+    foreach ($Other in $ShowMenu.Items) { if ($Other -is [Windows.Controls.MenuItem] -and $Other.IsCheckable) { $Other.IsChecked = $true } }
+    Update-Widget
+  })
+  $ShowMenu.Items.Add($All) | Out-Null
+  $PreviousGroup = $null
+  foreach ($Entry in $script:AllItems) {
+    if ($Entry.Group -ne $PreviousGroup) { $ShowMenu.Items.Add((New-Object Windows.Controls.Separator)) | Out-Null; $PreviousGroup = $Entry.Group }
+    $Choice = New-Object Windows.Controls.MenuItem
+    $Choice.Header = $Entry.Label; $Choice.Tag = $Entry.Label
+    $Choice.IsCheckable = $true; $Choice.StaysOpenOnClick = $true
+    $Choice.IsChecked = -not $Hidden.Contains($Entry.Label)
+    $Choice.Add_Click({
+      param($Sender)
+      if ($Sender.IsChecked) { [void]$Hidden.Remove($Sender.Tag) } else { [void]$Hidden.Add($Sender.Tag) }
+      Save-Hidden
+      Update-Widget
+    })
+    $ShowMenu.Items.Add($Choice) | Out-Null
+  }
+}
+$Menu.Add_Opened({ Update-ShowMenu })
+foreach ($Item in $Open, $StyleMenu, $EdgeMenu, $ShowMenu, $Corner, $Quit) { $Menu.Items.Add($Item) | Out-Null }
 $Window.ContextMenu = $Menu
 
 $Timer = New-Object Windows.Threading.DispatcherTimer

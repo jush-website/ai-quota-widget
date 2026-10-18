@@ -17,7 +17,7 @@ New-Item -ItemType Directory -Path $Stage | Out-Null
 
 # Same exclusions as the portable zip: per-machine state, dev folders, the installer itself, tests.
 $Skip = 'logs', '.claude-flow', '.deep-research', 'node_modules', '.git', '.gitignore', 'installer', 'test',
-  '.usage.pid', '.env', '.widget-style', '.widget-pinned', '.widget-top', '.widget-left', '.widget-edge'
+  '.usage.pid', '.env', '.widget-style', '.widget-pinned', '.widget-top', '.widget-left', '.widget-edge', '.widget-hidden'
 Get-ChildItem -LiteralPath $Root -Force | Where-Object { $Skip -notcontains $_.Name } |
   ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $Stage $_.Name) -Recurse -Force }
 $Logo = Join-Path $Stage 'public\codex.png'   # unused third-party logo, never ship it
