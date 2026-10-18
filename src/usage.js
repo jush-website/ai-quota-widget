@@ -4,6 +4,7 @@ import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import https from 'node:https';
+import http from 'node:http';
 
 const HOME = os.homedir();
 const CLAUDE_LIVE_CACHE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'logs', 'claude-live-cache.json');
@@ -487,23 +488,24 @@ function runPowerShell(script, timeoutMs = 15000) {
   });
 }
 
+// 程式名稱依版本可能是 language_server.exe 或 language_server_windows_x64.exe，用開頭比對
 async function findAntigravityServer() {
-  if (process.platform !== 'win32') return null;
+  if (process.platform !== 'win32') return { found: false };
   const output = await runPowerShell(`
-    $p = Get-CimInstance Win32_Process -Filter "Name='language_server.exe'" | Where-Object { $_.CommandLine -match 'antigravity' } | Select-Object -First 1
+    $p = Get-CimInstance Win32_Process -Filter "Name LIKE 'language_server%'" | Where-Object { $_.CommandLine -match 'antigravity' } | Select-Object -First 1
     if ($p) { [pscustomobject]@{ cmd = $p.CommandLine; ports = @(Get-NetTCPConnection -State Listen -OwningProcess $p.ProcessId -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort) } | ConvertTo-Json -Compress }`);
   try {
     const found = JSON.parse(output);
     const token = String(found.cmd || '').match(/--csrf_token[= ](\S+)/)?.[1];
-    return token ? { token, ports: [].concat(found.ports ?? []).map(Number).filter(Boolean) } : null;
-  } catch { return null; }
+    return { found: true, token, ports: [].concat(found.ports ?? []).map(Number).filter(Boolean) };
+  } catch { return { found: false }; }
 }
 
-function antigravityStatusRequest(port, token) {
+function antigravityStatusRequest(port, token, secure = true) {
   const body = JSON.stringify({ metadata: { ideName: 'antigravity', extensionName: 'antigravity', locale: 'en' } });
   return new Promise((resolve, reject) => {
     // 只連 127.0.0.1；language_server 用自簽憑證，所以這一個請求不驗證憑證
-    const request = https.request({
+    const request = (secure ? https : http).request({
       host: '127.0.0.1', port, method: 'POST', rejectUnauthorized: false, timeout: 5000,
       path: '/exa.language_server_pb.LanguageServerService/GetUserStatus',
       headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'X-Codeium-Csrf-Token': token, 'Content-Length': Buffer.byteLength(body) }
@@ -521,22 +523,31 @@ function antigravityStatusRequest(port, token) {
   });
 }
 
+// 最後一次失敗卡在哪一步，給畫面顯示：not-running／no-token／request-failed
+let antigravityProblem = { kind: 'not-running', detail: '' };
+
 async function fetchAntigravityStatus() {
   if (antigravityConnection) {
-    try { return await antigravityStatusRequest(antigravityConnection.port, antigravityConnection.token); }
+    try { return await antigravityStatusRequest(antigravityConnection.port, antigravityConnection.token, antigravityConnection.secure); }
     catch { antigravityConnection = null; }
   }
   // ponytail: 找程序要開 PowerShell（約 1 秒），Antigravity 沒開時最多每 30 秒找一次
   if (Date.now() < nextAntigravityDiscoveryAt) return null;
   nextAntigravityDiscoveryAt = Date.now() + 30 * 1000;
   const server = await findAntigravityServer();
-  for (const port of server?.ports ?? []) {
-    try {
-      const status = await antigravityStatusRequest(port, server.token);
-      antigravityConnection = { port, token: server.token };
-      return status;
-    } catch { /* 另一個連接埠不是 HTTPS API，試下一個 */ }
+  if (!server.found) { antigravityProblem = { kind: 'not-running', detail: '' }; return null; }
+  if (!server.token) { antigravityProblem = { kind: 'no-token', detail: '' }; return null; }
+  let lastError = server.ports.length ? '' : '沒有開啟任何連接埠';
+  for (const port of server.ports) {
+    for (const secure of [true, false]) {   // 通常是 HTTPS；不同版本可能是 HTTP
+      try {
+        const status = await antigravityStatusRequest(port, server.token, secure);
+        antigravityConnection = { port, token: server.token, secure };
+        return status;
+      } catch (error) { lastError = error.message || String(error); }
+    }
   }
+  antigravityProblem = { kind: 'request-failed', detail: lastError };
   return null;
 }
 
@@ -566,14 +577,19 @@ export function antigravityWindows(userStatus) {
 
 export async function readAntigravityUsage() {
   const base = { id: 'antigravity', name: 'Antigravity' };
-  const installed = await firstExistingPath([
+  const installDir = await firstExistingPath([
     process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'antigravity') : null,
+    process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'Antigravity') : null,
+    process.env['ProgramFiles(x86)'] ? path.join(process.env['ProgramFiles(x86)'], 'Antigravity') : null,
     path.join(HOME, '.antigravity')
   ]);
-  if (!installed) return { ...base, installed: false, available: false, message: '這台電腦尚未安裝 Antigravity。', windows: [] };
 
   let status = null;
   try { status = await fetchAntigravityStatus(); } catch { /* 下面處理 */ }
+  // 裝在不認得的位置也沒關係：只要找到執行中的 Antigravity 就算已安裝
+  if (!installDir && !status && !lastAntigravityResult && antigravityProblem.kind === 'not-running') {
+    return { ...base, installed: false, available: false, message: '這台電腦尚未安裝 Antigravity。', windows: [] };
+  }
   const windows = antigravityWindows(status?.userStatus);
   if (windows.length) {
     lastAntigravityResult = {
@@ -584,10 +600,15 @@ export async function readAntigravityUsage() {
     };
     return lastAntigravityResult;
   }
+  const problem = status ? '已連上 Antigravity，但它沒有回傳任何模型額度。' : {
+    'not-running': '請先開啟 Antigravity；額度由執行中的 Antigravity 提供。',
+    'no-token': '找到執行中的 Antigravity，但讀不到它的連線驗證資訊（可能是 Antigravity 版本不同）。',
+    'request-failed': `找到 Antigravity 的背景服務，但查詢額度失敗（${antigravityProblem.detail}）。`
+  }[antigravityProblem.kind];
   if (lastAntigravityResult) {
-    return { ...lastAntigravityResult, source: 'recent-live-cache', stale: true, message: 'Antigravity 目前沒有開啟，顯示最後一次取得的資料。' };
+    return { ...lastAntigravityResult, source: 'recent-live-cache', stale: true, message: `${problem} 目前顯示最後一次取得的資料。` };
   }
-  return { ...base, installed: true, available: false, message: '請先開啟 Antigravity；額度由執行中的 Antigravity 提供。', windows: [] };
+  return { ...base, installed: true, available: false, message: problem, windows: [] };
 }
 
 export async function readAllUsage() {

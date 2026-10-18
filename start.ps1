@@ -134,6 +134,26 @@ if (-not $NodePath) {
   exit 1
 }
 
+# One dashboard per user. A copy from another folder (an old portable zip, or the MSI vs. the zip)
+# still holding port 3456 would otherwise be reused, so the newer version's features never show.
+# Only processes started from some folder's runtime\node.exe or widget.ps1 are touched, never a
+# developer's `node src/server.js` run with a system-wide Node.
+function Stop-OtherCopies {
+  $Here = $PSScriptRoot.TrimEnd('\') + '\'
+  $Stopped = @(Get-CimInstance Win32_Process -Filter "Name='node.exe' OR Name='powershell.exe'" -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.ProcessId -ne $PID -and $_.CommandLine -and
+      ($_.CommandLine -match '\\runtime\\node\.exe"? src/server\.js' -or $_.CommandLine -match 'widget\.ps1') -and
+      -not $_.CommandLine.Contains($Here)
+    })
+  foreach ($Old in $Stopped) { Stop-Process -Id $Old.ProcessId -Force -ErrorAction SilentlyContinue }
+  if ($Stopped.Count) {
+    Write-Host "Stopped $($Stopped.Count) dashboard process(es) running from another folder."
+    Start-Sleep -Milliseconds 800   # let the port be released
+  }
+}
+Stop-OtherCopies
+
 $RunningProcess = Get-UsageProcess
 if ($RunningProcess) {
   Write-Host "AI usage dashboard is already running (PID $($RunningProcess.Id))."
