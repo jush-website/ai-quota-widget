@@ -44,6 +44,7 @@ $Sampler.Runspace = $Runspace
         $Client.Encoding = [Text.Encoding]::UTF8
         if ($AccessKey) { $Client.Headers.Add('x-access-key', $AccessKey) }
         $State.usage = $Client.DownloadString("http://localhost:$Port/api/usage") | ConvertFrom-Json
+        try { $State.update = $Client.DownloadString("http://localhost:$Port/api/update") | ConvertFrom-Json } catch {}
         $State.offline = $false
         $NextUsage = (Get-Date).AddSeconds(60)
       } catch { $State.offline = $true; $NextUsage = (Get-Date).AddSeconds(5) }
@@ -368,7 +369,17 @@ function Update-Widget {
   for ($I = 0; $I -lt $Items.Count; $I++) { Set-Cell $Cells[$I] $Items[$I] }
   $Width = Get-WindowWidth
   if ($Window.Width -ne $Width) { $Window.Width = $Width }
-  $Status.Text = if ($State.offline) { '服務離線' } else { (Get-Date).ToString('HH:mm') }
+  # 標題列右邊：平常顯示時間；有新版、更新中、更新失敗時改成提示
+  $U = $State.update
+  $Line = if ($State.offline) { @('服務離線', '#99FFFFFF') }
+    elseif ($U.status -in 'downloading', 'installing') { @('更新中…', '#FACC15') }
+    elseif ($U.status -eq 'error') { @('更新失敗', '#FF5C5C') }
+    elseif ($U.newer) { @("有新版 v$($U.latest)", '#FACC15') }
+    else { @((Get-Date).ToString('HH:mm'), '#99FFFFFF') }
+  $Status.Text = $Line[0]
+  $Status.Foreground = Get-Brush $Line[1]
+  $Tip = if ($U.status -eq 'error') { $U.error } elseif ($U.newer) { '右鍵選單可以更新' } else { $null }
+  if ($Status.ToolTip -ne $Tip) { $Status.ToolTip = $Tip }
 }
 
 # 右側：把手在左邊（直的）；頂部：把手移到下緣（橫的），燈號跟著轉橫排
@@ -595,8 +606,37 @@ function Update-ShowMenu {
     $ShowMenu.Items.Add($Choice) | Out-Null
   }
 }
-$Menu.Add_Opened({ Update-ShowMenu })
-foreach ($Item in $Open, $StyleMenu, $EdgeMenu, $ShowMenu, $Corner, $Quit) { $Menu.Items.Add($Item) | Out-Null }
+# 更新：有新版才出現在選單最上面。MSI 安裝版先確認再請伺服器下載安裝；可攜版打開 GitHub 下載頁
+$UpdateItem = New-Object Windows.Controls.MenuItem
+$UpdateItem.FontWeight = 'Bold'
+function Update-UpdateItem {
+  $U = $State.update
+  if (-not $U -or -not $U.newer -or $U.status -in 'downloading', 'installing') { $UpdateItem.Visibility = 'Collapsed'; return }
+  $UpdateItem.Visibility = 'Visible'
+  $UpdateItem.Header = if ($U.managed) { "更新到 v$($U.latest)…" } else { "下載新版 v$($U.latest)…" }
+}
+function Confirm-Update([string]$Version) {
+  $Text = "要現在更新到 v$Version 嗎？`n`n小工具會先關閉，安裝完成後幾秒內自動重新開啟，設定會保留。"
+  return [System.Windows.MessageBox]::Show($Window, $Text, 'AI 額度小工具', 'YesNo', 'Question') -eq 'Yes'
+}
+function Invoke-Update {
+  $U = $State.update
+  if (-not $U.managed) {
+    if ("$($U.pageUrl)" -like 'https://github.com/*') { Start-Process $U.pageUrl }
+    return
+  }
+  if (-not (Confirm-Update $U.latest)) { return }
+  try {
+    $Client = New-Object Net.WebClient
+    $Client.Encoding = [Text.Encoding]::UTF8
+    if ($AccessKey) { $Client.Headers.Add('x-access-key', $AccessKey) }
+    $State.update = $Client.UploadString("http://localhost:$Port/api/update/install", 'POST', '') | ConvertFrom-Json
+  } catch { [void][System.Windows.MessageBox]::Show($Window, "無法開始更新：$($_.Exception.Message)", 'AI 額度小工具') }
+  Update-Widget
+}
+$UpdateItem.Add_Click({ Invoke-Update })
+$Menu.Add_Opened({ Update-ShowMenu; Update-UpdateItem })
+foreach ($Item in $UpdateItem, $Open, $StyleMenu, $EdgeMenu, $ShowMenu, $Corner, $Quit) { $Menu.Items.Add($Item) | Out-Null }
 $Window.ContextMenu = $Menu
 
 $Timer = New-Object Windows.Threading.DispatcherTimer

@@ -5,6 +5,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readAllUsage } from './usage.js';
+import { updateStatus, installUpdate, startUpdateChecks } from './update.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC = path.join(ROOT, 'public');
@@ -130,6 +131,17 @@ const server = http.createServer(async (request, response) => {
     catch (error) { return json(response, 500, { error: error.message || '讀取用量失敗。' }); }
   }
   if (url.pathname === '/api/health') return json(response, 200, { ok: true });
+  if (url.pathname === '/api/update' && request.method === 'GET') {
+    if (!authorized(request)) return json(response, 401, { error: '存取密碼不正確。' });
+    return json(response, 200, updateStatus());
+  }
+  if (url.pathname === '/api/update/install' && request.method === 'POST') {
+    // 安裝只接受這台電腦自己發出的請求，區網裡的手機或其他電腦不能觸發
+    if (!['127.0.0.1', '::1'].includes(normalizeIp(remote))) return json(response, 403, { error: '只能在這台電腦上更新。' });
+    if (!authorized(request)) return json(response, 401, { error: '存取密碼不正確。' });
+    try { return json(response, 202, installUpdate()); }
+    catch (error) { return json(response, 409, { error: error.message }); }
+  }
   if (request.method === 'GET' && await staticFile(url.pathname, response)) return;
   json(response, 404, { error: '找不到頁面。' });
 });
@@ -145,5 +157,6 @@ if (isMain) {
     console.log(`本機：http://localhost:${PORT}`);
     for (const address of lanAddresses()) console.log(`區網：http://${address}:${PORT}`);
     console.log(ACCESS_KEY ? '已啟用存取密碼。\n' : '提醒：目前未設定 ACCESS_KEY，區網內任何人皆可查看。\n');
+    startUpdateChecks();
   });
 }
