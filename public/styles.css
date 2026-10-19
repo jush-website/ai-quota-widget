@@ -6,6 +6,7 @@
   --text: #f1f2ef;
   --muted: #8e969e;
   --green: #9ae6b4;
+  --yellow: #f2d675;
   --orange: #f4b183;
   --red: #ff7b7b;
 }
@@ -56,6 +57,7 @@ header p, .login p { color: var(--muted); margin: 14px 0 0; }
 .percent small { color: var(--muted); font-size: 12px; letter-spacing: 0; margin-left: 5px; }
 .bar { height: 7px; margin: 14px 0 11px; border-radius: 999px; background: #282c2e; overflow: hidden; }
 .bar > span { display: block; height: 100%; border-radius: inherit; background: var(--green); transition: width .45s ease; box-shadow: 0 0 18px rgba(154,230,180,.3); }
+.bar.half > span { background: var(--yellow); box-shadow: 0 0 18px rgba(242,214,117,.25); }
 .bar.warn > span { background: var(--orange); box-shadow: 0 0 18px rgba(244,177,131,.25); }
 .bar.danger > span { background: var(--red); box-shadow: 0 0 18px rgba(255,123,123,.28); }
 .window-bottom { color: var(--muted); font-size: 12px; }
@@ -125,7 +127,7 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 22px
 .mark-mascot { width: 54px; height: 54px; overflow: visible; background: rgba(255,255,255,.03); }
 .mascot { width: 44px; height: 44px; overflow: visible; transform-origin: 50% 100%; }
 img.mascot { object-fit: contain; border-radius: 9px; }
-/* 心情由額度決定：happy < 65% ≤ worried < 85% ≤ panic；沒資料=idle */
+/* 心情由額度決定：happy < 75% ≤ worried < 90% ≤ panic；沒資料=idle */
 .mascot-crab[data-mood="happy"] { animation: crab-hop 1.2s steps(1) infinite; }
 .mascot-crab[data-mood="worried"] { animation: crab-hop 2.8s steps(1) infinite; }
 .mascot-term[data-mood="happy"] { animation: term-float 2s steps(1) infinite; }

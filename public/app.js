@@ -59,7 +59,7 @@ const MOODS = {
 function moodOf(provider) {
   if (!provider.available || !provider.windows?.length) return 'idle';
   const used = provider.windows.reduce((max, w) => Math.max(max, w.usedPercent ?? 0), 0);
-  return used >= 85 ? 'panic' : used >= 65 ? 'worried' : 'happy';
+  return used >= 90 ? 'panic' : used >= 75 ? 'worried' : 'happy';  // 與長條四段一致：橘起擔心、紅起驚慌
 }
 
 function mascot(id, mood) {
@@ -109,7 +109,8 @@ function providerCard(provider) {
   </div>` : '';
   const windows = provider.windows?.map((window) => {
     const used = Math.min(100, Math.max(0, window.usedPercent ?? 0));
-    const tone = used >= 85 ? 'danger' : used >= 65 ? 'warn' : '';
+    // 四段：綠 <50、黃 50–74、橘 75–89、紅 ≥90（與桌面小工具相同）
+    const tone = used >= 90 ? 'danger' : used >= 75 ? 'warn' : used >= 50 ? 'half' : '';
     return `<div class="window">
       <div class="window-top"><span class="window-title">${escapeHtml(window.label)}</span><span class="percent">${Math.round(used)}%<small>已使用</small></span></div>
       <div class="bar ${tone}"><span style="width:${used}%"></span></div>
