@@ -58,15 +58,18 @@
       <RegistryValue Root="HKCU" Key="Software\jush-website\ai-quota-widget" Name="cleanup" Type="integer" Value="1" KeyPath="yes" />
     </Component>
 
-    <!-- 換檔前先關掉這個資料夾裡正在執行的伺服器與小工具，避免「檔案使用中」。
+    <!-- 換檔前先關掉這個資料夾裡正在執行的伺服器與小工具，避免「檔案使用中」，也讓更新後跑的是新版程式。
+         伺服器的命令列是相對路徑 src/server.js，看不出資料夾，所以改用 .usage.pid 找。
          立即執行的 WixQuietExec 固定讀 WixQuietExecCmdLine；含 [屬性] 的 {…} 會被 MSI 當選擇性區塊拿掉大括號，所以寫成 [\{] [\}] -->
     <SetProperty Id="WixQuietExecCmdLine" Before="StopApp" Sequence="execute"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;Get-CimInstance Win32_Process | Where-Object [\{] $_.ProcessId -ne $PID -and $_.CommandLine -like '*[INSTALLFOLDER]*' [\}] | ForEach-Object [\{] Stop-Process -Id $_.ProcessId -Force [\}]&quot;" />
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;Get-CimInstance Win32_Process | Where-Object [\{] $_.ProcessId -ne $PID -and $_.CommandLine -like '*[INSTALLFOLDER]*' [\}] | ForEach-Object [\{] Stop-Process -Id $_.ProcessId -Force [\}]; Get-Content '[INSTALLFOLDER].usage.pid' -ErrorAction SilentlyContinue | ForEach-Object [\{] Get-Process -Id $_ -ErrorAction SilentlyContinue [\}] | Where-Object Name -eq node | Stop-Process -Force&quot;" />
     <CustomAction Id="StopApp" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="immediate" Return="ignore" />
 
-    <!-- 裝好後直接開啟小工具（等同按開始功能表的捷徑） -->
+    <!-- 裝好後開啟小工具：請檔案總管去開開始功能表的捷徑，不要讓小工具成為安裝程式的子程序。
+         Windows 對安裝程式（msiexec）啟動的程式套用「重新導向防護」，不能穿過使用者自建的連結／接合點；
+         若 ~\.claude 是接合點（例如指到 D:\.claude），直接由安裝程式啟動的伺服器會讀不到 Claude 的登入憑證 -->
     <CustomAction Id="LaunchApp" Directory="INSTALLFOLDER" Execute="immediate" Return="asyncNoWait"
-                  ExeCommand="&quot;[System64Folder]wscript.exe&quot; &quot;[INSTALLFOLDER]startup.vbs&quot;" />
+                  ExeCommand="&quot;[WindowsFolder]explorer.exe&quot; &quot;[MenuDir]AI 額度小工具.lnk&quot;" />
 
     <InstallExecuteSequence>
       <Custom Action="StopApp" Before="InstallValidate" />
