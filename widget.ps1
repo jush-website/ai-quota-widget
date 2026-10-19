@@ -151,8 +151,14 @@ function Get-Brush([string]$Color) {
   return $Brushes[$Color]
 }
 
+# 四段：綠 <50 充裕、黃 50–74 用掉一半、橘 75–89 注意、紅 ≥90 快用完（燈號快閃）。GPU 溫度同刻度（°C）
+$AlertLevel = 90
 function Get-LevelColor($Percent) {
-  if ($null -eq $Percent) { '#66FFFFFF' } elseif ($Percent -ge 85) { '#FF5C5C' } elseif ($Percent -ge 65) { '#FFB547' } else { '#4ADE80' }
+  if ($null -eq $Percent) { '#66FFFFFF' }
+  elseif ($Percent -ge $AlertLevel) { '#FF5C5C' }
+  elseif ($Percent -ge 75) { '#FB923C' }
+  elseif ($Percent -ge 50) { '#FACC15' }
+  else { '#4ADE80' }
 }
 
 function New-Text([string]$Text, [double]$Size, [string]$Color) {
@@ -233,7 +239,7 @@ function New-TextCell($Item, [bool]$Gap) {
   return @{ Root = $Grid; Value = $Value }
 }
 
-# 把手上的燈號：每個項目一顆，平常依序慢慢呼吸（波浪），到 85% 以上改成快閃
+# 把手上的燈號：每個項目一顆，平常依序慢慢呼吸（波浪），到 $AlertLevel（90%）以上改成快閃
 # ponytail: 透明視窗每格動畫都要整窗重繪，限 20fps 省 CPU；還嫌耗就改成只在收合時播放
 function New-Dot([int]$Index) {
   $Dot = New-Object Windows.Shapes.Ellipse
@@ -256,7 +262,7 @@ function Set-DotPulse($Cell, [bool]$Alert) {
 function Set-Cell($Cell, $Item) {
   if ($Cell.Dot) {
     $Cell.Dot.Fill = Get-Brush (Get-LevelColor $Item.Percent)
-    $Alert = $Item.Percent -ge 85
+    $Alert = $Item.Percent -ge $AlertLevel
     if ($Cell.Alert -ne $Alert) { Set-DotPulse $Cell $Alert }
   }
   $Tip = if ($Item.Tip) { $Item.Tip } else { $null }
