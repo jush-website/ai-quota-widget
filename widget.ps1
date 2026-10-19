@@ -372,14 +372,18 @@ function Update-Widget {
   if ($Window.Width -ne $Width) { $Window.Width = $Width }
   # 標題列右邊：平常顯示時間；有新版、更新中、更新失敗時改成提示
   $U = $State.update
+  # 需要使用者處理的事（例如 Claude 要重新登入），要跳通知的排前面
+  $Needs = @(@($State.usage.providers) | Where-Object { $_ -and $_.attention } | Sort-Object { -not $_.attention.notify }) | Select-Object -First 1
+  Check-Attention
   $Line = if ($State.offline) { @('服務離線', '#99FFFFFF') }
     elseif ($U.status -in 'downloading', 'installing') { @('更新中…', '#FACC15') }
     elseif ($U.status -eq 'error') { @('更新失敗', '#FF5C5C') }
+    elseif ($Needs) { @($Needs.attention.text, '#FACC15') }
     elseif ($U.newer) { @("有新版 v$($U.latest)", '#FACC15') }
     else { @((Get-Date).ToString('HH:mm'), '#99FFFFFF') }
   $Status.Text = $Line[0]
   $Status.Foreground = Get-Brush $Line[1]
-  $Tip = if ($U.status -eq 'error') { $U.error } elseif ($U.newer) { '右鍵選單可以更新' } else { $null }
+  $Tip = if ($U.status -eq 'error') { $U.error } elseif ($Needs) { "$($Needs.message)" } elseif ($U.newer) { '右鍵選單可以更新' } else { $null }
   if ($Status.ToolTip -ne $Tip) { $Status.ToolTip = $Tip }
 }
 
@@ -636,8 +640,56 @@ function Invoke-Update {
   Update-Widget
 }
 $UpdateItem.Add_Click({ Invoke-Update })
-$Menu.Add_Opened({ Update-ShowMenu; Update-UpdateItem })
-foreach ($Item in $UpdateItem, $Open, $StyleMenu, $EdgeMenu, $ShowMenu, $Corner, $Quit) { $Menu.Items.Add($Item) | Out-Null }
+
+# 需要處理的提醒：同一次失效只通知一次（處理好、提醒消失後再失效才會再通知）；
+# 期間系統匣留一個圖示，處理好就自動拿掉
+Add-Type -AssemblyName System.Drawing
+$Notified = New-Object 'System.Collections.Generic.HashSet[string]'
+$Tray = $null
+$TrayAction = $null
+function Invoke-Attention([string]$Action) {
+  if ($Action -eq 'claude-login') {
+    # 開 Claude 官方登入；跑完停在畫面上讓人看結果
+    $Setup = Join-Path $PSScriptRoot 'claude-setup.ps1'
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"& '$Setup'; Write-Host ''; Read-Host '按 Enter 關閉此視窗'`""
+  } else { Start-Process "http://localhost:$Port" }
+}
+function Show-Notice($Provider) {
+  if (-not $script:Tray) {
+    $script:Tray = New-Object System.Windows.Forms.NotifyIcon
+    try { $script:Tray.Icon = New-Object System.Drawing.Icon (Join-Path $PSScriptRoot 'app.ico') } catch { $script:Tray.Icon = [System.Drawing.SystemIcons]::Information }
+    $script:Tray.Text = 'AI 額度小工具'
+    $script:Tray.Add_BalloonTipClicked({ Invoke-Attention $script:TrayAction })
+    $script:Tray.Add_MouseClick({ Invoke-Attention $script:TrayAction })
+  }
+  $script:TrayAction = $Provider.attention.action
+  $script:Tray.Visible = $true
+  $script:Tray.BalloonTipTitle = 'AI 額度小工具'
+  $script:Tray.BalloonTipText = "$($Provider.attention.text)。點這裡處理。"
+  $script:Tray.ShowBalloonTip(15000)
+}
+function Check-Attention {
+  $Active = $false
+  foreach ($Provider in @($State.usage.providers)) {
+    if (-not $Provider) { continue }
+    if ($Provider.attention -and $Provider.attention.notify) {
+      $Active = $true
+      if ($Notified.Add($Provider.id)) { Show-Notice $Provider }
+    } else { [void]$Notified.Remove($Provider.id) }
+  }
+  if (-not $Active -and $script:Tray) { $script:Tray.Visible = $false }
+}
+$LoginItem = New-Object Windows.Controls.MenuItem
+$LoginItem.Header = '重新登入 Claude…'; $LoginItem.FontWeight = 'Bold'
+$LoginItem.Add_Click({ Invoke-Attention 'claude-login' })
+function Update-LoginItem {
+  $Needed = @(@($State.usage.providers) | Where-Object { $_ -and $_.attention.action -eq 'claude-login' }).Count -gt 0
+  $LoginItem.Visibility = if ($Needed) { 'Visible' } else { 'Collapsed' }
+}
+$Window.Add_Closed({ if ($script:Tray) { $script:Tray.Dispose() } })
+
+$Menu.Add_Opened({ Update-ShowMenu; Update-UpdateItem; Update-LoginItem })
+foreach ($Item in $LoginItem, $UpdateItem, $Open, $StyleMenu, $EdgeMenu, $ShowMenu, $Corner, $Quit) { $Menu.Items.Add($Item) | Out-Null }
 $Window.ContextMenu = $Menu
 
 $Timer = New-Object Windows.Threading.DispatcherTimer

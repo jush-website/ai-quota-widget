@@ -359,6 +359,8 @@ function codexLogFallback(result, error, now = Date.now()) {
     windows,
     source: 'logs',
     stale: true,
+    // 不跳通知：不用登入，下次開 Codex 就會自己刷新；很少用 Codex 的人每次開機都被通知會很煩
+    attention: error?.status === 401 ? { text: 'Codex 憑證過期', action: 'open-codex', notify: false } : undefined,
     message: `${reason}，目前顯示最後一次使用 Codex 時的紀錄（${stamp}），已過重置時間的額度以 0% 顯示。開啟 Codex 使用一次就會恢復即時資料。`
   };
 }
@@ -418,7 +420,16 @@ async function readCodexLogUsage(codexHome) {
   };
 }
 
+// attention：需要使用者處理的事。小工具據此顯示提醒；notify=true 才跳 Windows 通知
 export async function readClaudeUsage(claudeHome = process.env.CLAUDE_HOME || path.join(HOME, '.claude')) {
+  const result = await readClaudeUsageInner(claudeHome);
+  if (result.installed !== false && result.source !== 'live' && !await claudeLoggedIn(claudeHome)) {
+    return { ...result, attention: { text: 'Claude 需重新登入', action: 'claude-login', notify: true } };
+  }
+  return result;
+}
+
+async function readClaudeUsageInner(claudeHome) {
   const cliPath = await findClaudeCli();
   if (!cliPath && !await providerInstalled('claude', claudeHome)) {
     return { id: 'claude', name: 'Claude', installed: false, available: false, source: 'unavailable', stale: false, message: '這台電腦尚未安裝 Claude Code。', windows: [] };
