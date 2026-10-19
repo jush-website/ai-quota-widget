@@ -151,14 +151,14 @@ function Get-Brush([string]$Color) {
   return $Brushes[$Color]
 }
 
-# 四段：綠 <50 充裕、黃 50–74 用掉一半、橘 75–89 注意、紅 ≥90 快用完（燈號快閃）。GPU 溫度同刻度（°C）
+# 四段：藍 <50 充裕、綠 50–74 用掉一半、黃 75–89 注意、紅 ≥90 快用完（燈號快閃）。GPU 溫度同刻度（°C）
 $AlertLevel = 90
 function Get-LevelColor($Percent) {
   if ($null -eq $Percent) { '#66FFFFFF' }
   elseif ($Percent -ge $AlertLevel) { '#FF5C5C' }
-  elseif ($Percent -ge 75) { '#FB923C' }
-  elseif ($Percent -ge 50) { '#FACC15' }
-  else { '#4ADE80' }
+  elseif ($Percent -ge 75) { '#FACC15' }
+  elseif ($Percent -ge 50) { '#4ADE80' }
+  else { '#60A5FA' }
 }
 
 function New-Text([string]$Text, [double]$Size, [string]$Color) {

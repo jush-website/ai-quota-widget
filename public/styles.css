@@ -5,6 +5,7 @@
   --line: #292d31;
   --text: #f1f2ef;
   --muted: #8e969e;
+  --blue: #8ab4f8;
   --green: #9ae6b4;
   --yellow: #f2d675;
   --orange: #f4b183;
@@ -50,15 +51,16 @@ header p, .login p { color: var(--muted); margin: 14px 0 0; }
 .context-window + .window { margin-top: 5px; }
 .context-value { color: var(--muted); font: 13px ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }
 .context-window .bar { margin-bottom: 0; }
-.bar.context-bar > span { background: #78a9ff; box-shadow: 0 0 18px rgba(120,169,255,.25); }
+.bar.context-bar > span { background: #b49cff; box-shadow: 0 0 18px rgba(180,156,255,.25); }  /* 紫：上下文用量不是額度，別和額度的藍混淆 */
 .window-top, .window-bottom { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .window-title { color: #c9cdca; font-size: 14px; }
 .percent { font-size: 31px; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
 .percent small { color: var(--muted); font-size: 12px; letter-spacing: 0; margin-left: 5px; }
 .bar { height: 7px; margin: 14px 0 11px; border-radius: 999px; background: #282c2e; overflow: hidden; }
-.bar > span { display: block; height: 100%; border-radius: inherit; background: var(--green); transition: width .45s ease; box-shadow: 0 0 18px rgba(154,230,180,.3); }
-.bar.half > span { background: var(--yellow); box-shadow: 0 0 18px rgba(242,214,117,.25); }
-.bar.warn > span { background: var(--orange); box-shadow: 0 0 18px rgba(244,177,131,.25); }
+/* 額度四段：藍 <50、綠 50–74、黃 75–89、紅 ≥90（與桌面小工具相同） */
+.bar > span { display: block; height: 100%; border-radius: inherit; background: var(--blue); transition: width .45s ease; box-shadow: 0 0 18px rgba(138,180,248,.3); }
+.bar.half > span { background: var(--green); box-shadow: 0 0 18px rgba(154,230,180,.3); }
+.bar.warn > span { background: var(--yellow); box-shadow: 0 0 18px rgba(242,214,117,.25); }
 .bar.danger > span { background: var(--red); box-shadow: 0 0 18px rgba(255,123,123,.28); }
 .window-bottom { color: var(--muted); font-size: 12px; }
 .empty { display: grid; min-height: 280px; place-items: center; text-align: center; color: var(--muted); line-height: 1.7; padding: 30px; }
