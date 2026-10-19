@@ -1,6 +1,6 @@
 {
   "name": "lan-ai-usage",
-  "version": "1.0.20",
+  "version": "1.0.21",
   "private": true,
   "description": "Codex and Claude LAN usage dashboard",
   "type": "module",

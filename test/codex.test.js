@@ -22,6 +22,12 @@ test('憑證過期：標成舊資料並說明怎麼恢復', () => {
   assert.equal(testing.codexLogFallback(fromLogs, new Error('network'), now).attention, undefined);
 });
 
+test('自動刷新也失敗：請人重新登入並跳通知', () => {
+  const result = testing.codexLogFallback(fromLogs, Object.assign(new Error('401'), { status: 401, needsLogin: true }), now);
+  assert.deepEqual([result.attention.action, result.attention.notify], ['codex-login', true]);
+  assert.match(result.message, /請重新登入 Codex/);
+});
+
 test('已過重置時間的額度以 0% 顯示，還沒重置的保留原值', () => {
   const [fiveHour, weekly] = testing.codexLogFallback(fromLogs, null, now).windows;
   assert.deepEqual([fiveHour.usedPercent, fiveHour.remainingPercent, fiveHour.resetPassed, fiveHour.resetsAt], [0, 100, true, null]);

@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
@@ -311,14 +311,60 @@ async function fetchCodexLiveUsage(codexHome) {
   return response.json();
 }
 
+function findCodexCli() {
+  const lookup = process.platform === 'win32'
+    ? spawnSync('where.exe', ['codex'], { windowsHide: true, encoding: 'utf8' })
+    : spawnSync('which', ['codex'], { encoding: 'utf8' });
+  const found = lookup.status === 0 ? String(lookup.stdout || '').split(/\r?\n/).find(Boolean)?.trim() : null;
+  if (found) return found;
+  const desktop = process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe');
+  return desktop && existsSync(desktop) ? desktop : null;
+}
+
+// access_token 過期時請 Codex 自己的 app-server 查一次額度：它會用 refresh_token 換新憑證並寫回 auth.json，
+// 我們不碰憑證檔。失敗（例如真的被登出）就 10 分鐘內不再試，免得每分鐘開一次 Codex。
+let codexRefreshPromise = null;
+let codexRefreshFailedAt = 0;
+function refreshCodexCredentials() {
+  if (codexRefreshPromise) return codexRefreshPromise;
+  if (Date.now() - codexRefreshFailedAt < 10 * 60 * 1000) return Promise.reject(new Error('Codex refresh cooling down'));
+  codexRefreshPromise = new Promise((resolve, reject) => {
+    const cliPath = findCodexCli();
+    if (!cliPath) return reject(new Error('Codex CLI not found'));
+    const child = spawn(cliPath, ['app-server'], { windowsHide: true, shell: /\.(cmd|bat)$/i.test(cliPath), stdio: ['pipe', 'pipe', 'ignore'] });
+    const finish = (error) => { clearTimeout(timer); child.kill(); error ? reject(error) : resolve(); };
+    const timer = setTimeout(() => finish(new Error('Codex refresh timed out')), 20000);
+    const send = (message) => child.stdin.write(JSON.stringify(message) + '\n');
+    let buffer = '';
+    child.once('error', finish);
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk;
+      for (let i; (i = buffer.indexOf('\n')) >= 0;) {
+        let message;
+        try { message = JSON.parse(buffer.slice(0, i)); } catch { message = null; }
+        buffer = buffer.slice(i + 1);
+        if (message?.id === 1) { send({ method: 'initialized' }); send({ id: 2, method: 'account/rateLimits/read' }); }
+        if (message?.id === 2) finish(message.error ? new Error(message.error.message || 'Codex refresh failed') : null);
+      }
+    });
+    send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'ai-quota-widget', version: '1' } } });
+  }).catch((error) => { codexRefreshFailedAt = Date.now(); throw error; })
+    .finally(() => { codexRefreshPromise = null; });
+  return codexRefreshPromise;
+}
+
 export async function readCodexUsage(codexHome = process.env.CODEX_HOME || path.join(HOME, '.codex')) {
   if (!await providerInstalled('codex', codexHome)) {
     return { id: 'codex', name: 'Codex', installed: false, available: false, message: '這台電腦尚未安裝 Codex。', windows: [] };
   }
   const fromLogs = await readCodexLogUsage(codexHome);
-  // ponytail: 直接查官方額度端點，跟 Codex /status 一致；access_token 由 Codex CLI 自己刷新，過期(401/失敗)就退回讀本機紀錄
+  // ponytail: 直接查官方額度端點，跟 Codex /status 一致；憑證過期(401)先請 Codex 自己刷新再試一次，還是不行就退回讀本機紀錄
   try {
-    const live = await fetchCodexLiveUsage(codexHome);
+    const live = await fetchCodexLiveUsage(codexHome).catch(async (error) => {
+      if (error.status !== 401) throw error;
+      try { await refreshCodexCredentials(); } catch (refreshError) { error.needsLogin = !/not found/.test(refreshError.message); throw error; }
+      return fetchCodexLiveUsage(codexHome);
+    });
     const rateLimit = live?.rate_limit ?? {};
     const windows = [
       codexWindowFromWham('primary', rateLimit.primary_window),
@@ -353,16 +399,18 @@ function codexLogFallback(result, error, now = Date.now()) {
   const when = result.updatedAt ? new Date(result.updatedAt) : null;
   const pad = (value) => String(value).padStart(2, '0');
   const stamp = when ? `${when.getMonth() + 1}/${when.getDate()} ${pad(when.getHours())}:${pad(when.getMinutes())}` : '不明時間';
-  const reason = error?.status === 401 ? 'Codex 的登入憑證已過期' : '無法即時查詢 Codex 額度';
-  return {
-    ...result,
-    windows,
-    source: 'logs',
-    stale: true,
-    // 不跳通知：不用登入，下次開 Codex 就會自己刷新；很少用 Codex 的人每次開機都被通知會很煩
-    attention: error?.status === 401 ? { text: 'Codex 憑證過期', action: 'open-codex', notify: false } : undefined,
-    message: `${reason}，目前顯示最後一次使用 Codex 時的紀錄（${stamp}），已過重置時間的額度以 0% 顯示。開啟 Codex 使用一次就會恢復即時資料。`
-  };
+  const expired = error?.status === 401;
+  const base = { ...result, windows, source: 'logs', stale: true };
+  const shown = `目前顯示最後一次使用 Codex 時的紀錄（${stamp}），已過重置時間的額度以 0% 顯示。`;
+  // 自動刷新也失敗＝真的被登出，才跳通知請人重新登入
+  if (expired && error.needsLogin) {
+    return { ...base, attention: { text: 'Codex 需重新登入', action: 'codex-login', notify: true }, message: `Codex 的登入已失效，自動刷新也失敗，${shown}請重新登入 Codex。` };
+  }
+  // 沒有 Codex CLI 可以代為刷新：只在標題列提示，開 Codex 用一次就會恢復
+  if (expired) {
+    return { ...base, attention: { text: 'Codex 憑證過期', action: 'open-codex', notify: false }, message: `Codex 的登入憑證已過期，${shown}開啟 Codex 使用一次就會恢復即時資料。` };
+  }
+  return { ...base, message: `無法即時查詢 Codex 額度，${shown}` };
 }
 
 async function readCodexLogUsage(codexHome) {
@@ -669,4 +717,4 @@ export async function readAllUsage() {
   };
 }
 
-export const testing = { isoFromUnix, windowFromCodex, windowFromClaude, individualCodexWindows, liveClaudeWindows, findClaudeCli, antigravityWindows, codexLogFallback };
+export const testing = { isoFromUnix, windowFromCodex, windowFromClaude, individualCodexWindows, liveClaudeWindows, findClaudeCli, antigravityWindows, codexLogFallback, refreshCodexCredentials };

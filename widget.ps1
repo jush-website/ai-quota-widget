@@ -652,6 +652,11 @@ function Invoke-Attention([string]$Action) {
     # 開 Claude 官方登入；跑完停在畫面上讓人看結果
     $Setup = Join-Path $PSScriptRoot 'claude-setup.ps1'
     Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"& '$Setup'; Write-Host ''; Read-Host '按 Enter 關閉此視窗'`""
+  } elseif ($Action -eq 'codex-login') {
+    # Codex 官方登入（會開瀏覽器）；找不到 PATH 上的 codex 就用桌面版內附的
+    $Codex = (Get-Command codex -ErrorAction SilentlyContinue).Source
+    if (-not $Codex) { $Codex = Join-Path $env:LOCALAPPDATA 'Programs\OpenAI\Codex\bin\codex.exe' }
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"& '$Codex' login; Write-Host ''; Read-Host '按 Enter 關閉此視窗'`""
   } else { Start-Process "http://localhost:$Port" }
 }
 function Show-Notice($Provider) {
@@ -682,14 +687,19 @@ function Check-Attention {
 $LoginItem = New-Object Windows.Controls.MenuItem
 $LoginItem.Header = '重新登入 Claude…'; $LoginItem.FontWeight = 'Bold'
 $LoginItem.Add_Click({ Invoke-Attention 'claude-login' })
+$CodexLoginItem = New-Object Windows.Controls.MenuItem
+$CodexLoginItem.Header = '重新登入 Codex…'; $CodexLoginItem.FontWeight = 'Bold'
+$CodexLoginItem.Add_Click({ Invoke-Attention 'codex-login' })
 function Update-LoginItem {
-  $Needed = @(@($State.usage.providers) | Where-Object { $_ -and $_.attention.action -eq 'claude-login' }).Count -gt 0
-  $LoginItem.Visibility = if ($Needed) { 'Visible' } else { 'Collapsed' }
+  foreach ($Pair in @(@($LoginItem, 'claude-login'), @($CodexLoginItem, 'codex-login'))) {
+    $Needed = @(@($State.usage.providers) | Where-Object { $_ -and $_.attention.action -eq $Pair[1] }).Count -gt 0
+    $Pair[0].Visibility = if ($Needed) { 'Visible' } else { 'Collapsed' }
+  }
 }
 $Window.Add_Closed({ if ($script:Tray) { $script:Tray.Dispose() } })
 
 $Menu.Add_Opened({ Update-ShowMenu; Update-UpdateItem; Update-LoginItem })
-foreach ($Item in $LoginItem, $UpdateItem, $Open, $StyleMenu, $EdgeMenu, $ShowMenu, $Corner, $Quit) { $Menu.Items.Add($Item) | Out-Null }
+foreach ($Item in $LoginItem, $CodexLoginItem, $UpdateItem, $Open, $StyleMenu, $EdgeMenu, $ShowMenu, $Corner, $Quit) { $Menu.Items.Add($Item) | Out-Null }
 $Window.ContextMenu = $Menu
 
 $Timer = New-Object Windows.Threading.DispatcherTimer
