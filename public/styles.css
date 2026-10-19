@@ -44,6 +44,7 @@ header p, .login p { color: var(--muted); margin: 14px 0 0; }
 .provider h2, .login h2 { margin: 5px 0 0; font-size: 27px; letter-spacing: -.03em; }
 .mark { width: 46px; height: 46px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 14px; font-weight: 750; background: rgba(255,255,255,.025); }
 .plan { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; text-transform: uppercase; margin-top: 6px; }
+.stale-note { margin: 10px 0 4px; padding: 8px 10px; color: var(--orange); background: rgba(244,177,131,.08); border: 1px solid rgba(244,177,131,.22); border-radius: 10px; font-size: 12px; line-height: 1.5; }
 .stale-badge { display: inline-block; margin-left: 5px; padding: 2px 6px; color: var(--orange); border: 1px solid rgba(244,177,131,.32); border-radius: 999px; font-size: 10px; vertical-align: 1px; }
 .window { padding: 22px 0; border-bottom: 1px solid var(--line); }
 .window:last-child { border-bottom: 0; }

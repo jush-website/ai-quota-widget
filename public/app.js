@@ -29,6 +29,7 @@ const formatTime = (iso) => iso ? new Intl.DateTimeFormat('zh-TW', { month: 'num
 const formatReset = (iso) => {
   if (!iso) return '重設時間未知';
   const diff = new Date(iso).getTime() - Date.now();
+  if (diff <= -60_000) return '已過重設時間';  // 舊資料才會出現：資料停在重設之前
   if (diff <= 0) return '即將重設';
   const hours = Math.floor(diff / 3_600_000);
   const minutes = Math.floor((diff % 3_600_000) / 60_000);
@@ -114,7 +115,7 @@ function providerCard(provider) {
     return `<div class="window">
       <div class="window-top"><span class="window-title">${escapeHtml(window.label)}</span><span class="percent">${Math.round(used)}%<small>已使用</small></span></div>
       <div class="bar ${tone}"><span style="width:${used}%"></span></div>
-      <div class="window-bottom"><span>剩餘 ${Math.round(window.remainingPercent ?? 100)}%</span><span>${escapeHtml(formatReset(window.resetsAt))}</span></div>
+      <div class="window-bottom"><span>剩餘 ${Math.round(window.remainingPercent ?? 100)}%</span><span>${escapeHtml(window.resetPassed ? '已重設' : formatReset(window.resetsAt))}</span></div>
     </div>`;
   }).join('') || '';
   // ponytail: credits-based Codex 帳號的 primary 會是 null，額度改放 credits.balance；沒補這塊就會整格空白
@@ -124,6 +125,7 @@ function providerCard(provider) {
   const body = context + windows + credits || `<div class="empty">${escapeHtml(provider.message || '目前沒有可顯示的額度資料')}</div>`;
   return `<article class="provider">
     <div class="provider-head"><div><span class="label">PROVIDER</span><h2>${escapeHtml(provider.name)}</h2><div class="plan">${escapeHtml(provider.plan || (provider.available ? 'CONNECTED' : 'WAITING FOR DATA'))} · 資料 ${escapeHtml(provider.updatedAt ? formatTime(provider.updatedAt) : '尚未取得')} ${staleBadge}</div></div>${mascot(provider.id, moodOf(provider))}</div>
+    ${provider.stale && provider.message && (windows || credits) ? `<div class="stale-note">${escapeHtml(provider.message)}</div>` : ''}
     <div>${body}</div>
   </article>`;
 }

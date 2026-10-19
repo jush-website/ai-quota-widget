@@ -306,7 +306,8 @@ function Get-Items {
       continue
     }
     foreach ($Limit in @($Provider.windows)) {
-      $Tip = if ($Limit.resetsAt) { '重置於 ' + ([datetime]$Limit.resetsAt).ToLocalTime().ToString('M/d HH:mm') } else { '' }
+      $Tip = if ($Limit.resetsAt) { '重置於 ' + ([datetime]$Limit.resetsAt).ToLocalTime().ToString('M/d HH:mm') } elseif ($Limit.resetPassed) { '已重置' } else { '' }
+      if ($Provider.stale -and $Provider.message) { $Tip = ("$Tip`n舊資料：$($Provider.message)").Trim() }
       if ($Provider.id -eq 'antigravity') {
         # 「Claude Opus 5.5」→「AG Opus」：去掉廠牌字與含數字的版本號，完整名稱放提示
         $Short = (($Limit.label -split '\s+') | Where-Object { $_ -notmatch '^(Claude|Gemini)$' -and $_ -notmatch '\d' }) -join ' '

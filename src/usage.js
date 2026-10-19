@@ -184,6 +184,14 @@ async function refreshClaudeCredentialsWithCli() {
   return credentialRefreshPromise;
 }
 
+// 檔案在不代表有登入：Claude Code 登出或刷新失敗時會留下 token 為空字串的檔案
+async function claudeLoggedIn(claudeHome) {
+  try { await claudeCredentials(claudeHome); return true; } catch { return false; }
+}
+const CLAUDE_TEMPORARY_PROBLEM = '即時端點暫時無法更新，保留最後一次成功資料。';
+const CLAUDE_LOGIN_HINT = 'Claude Code 的登入已失效或尚未登入。請從開始功能表執行「AI 額度小工具 設定」（可攜版：重新執行「啟動儀表板.bat」），依提示重新登入。';
+let lastClaudeProblem = CLAUDE_TEMPORARY_PROBLEM;
+
 async function claudeCredentials(claudeHome) {
   const credentials = JSON.parse(await fs.readFile(path.join(claudeHome, '.credentials.json'), 'utf8'))?.claudeAiOauth;
   if (!credentials?.accessToken) throw new Error('Claude OAuth credentials not found');
@@ -330,8 +338,29 @@ export async function readCodexUsage(codexHome = process.env.CODEX_HOME || path.
         credits: live.credits ?? fromLogs.credits ?? null
       };
     }
-  } catch { /* 即時查詢失敗，退回本機紀錄 */ }
-  return fromLogs;
+  } catch (error) { return codexLogFallback(fromLogs, error); }
+  return codexLogFallback(fromLogs, null);
+}
+
+// 即時查詢失敗時退回「最後一次使用 Codex」的本機紀錄，要標成舊資料：
+// 憑證只有在使用 Codex 時才會刷新，幾天沒用就會過期（401）。
+// 紀錄之後沒再用過 Codex，所以已過重置時間的額度實際上是 0%。
+function codexLogFallback(result, error, now = Date.now()) {
+  if (!result.available) return result;
+  const windows = result.windows.map((window) => window.resetsAt && Date.parse(window.resetsAt) <= now
+    ? { ...window, usedPercent: 0, remainingPercent: 100, resetsAt: null, resetPassed: true }
+    : window);
+  const when = result.updatedAt ? new Date(result.updatedAt) : null;
+  const pad = (value) => String(value).padStart(2, '0');
+  const stamp = when ? `${when.getMonth() + 1}/${when.getDate()} ${pad(when.getHours())}:${pad(when.getMinutes())}` : '不明時間';
+  const reason = error?.status === 401 ? 'Codex 的登入憑證已過期' : '無法即時查詢 Codex 額度';
+  return {
+    ...result,
+    windows,
+    source: 'logs',
+    stale: true,
+    message: `${reason}，目前顯示最後一次使用 Codex 時的紀錄（${stamp}），已過重置時間的額度以 0% 顯示。開啟 Codex 使用一次就會恢復即時資料。`
+  };
 }
 
 async function readCodexLogUsage(codexHome) {
@@ -397,7 +426,9 @@ export async function readClaudeUsage(claudeHome = process.env.CLAUDE_HOME || pa
   const cachePath = path.join(claudeHome, 'usage-cache.json');
   const recentLive = await cachedClaudeLiveResult();
   const recentAge = recentLive?.updatedAt ? Date.now() - Date.parse(recentLive.updatedAt) : Infinity;
-  if (recentLive && (recentAge < CLAUDE_FETCH_INTERVAL_MS || Date.now() < nextClaudeFetchAt)) return recentLive;
+  if (recentLive && recentAge < CLAUDE_FETCH_INTERVAL_MS) return recentLive;
+  // 上次查詢失敗後的等待期間：沿用舊資料，但要標成舊資料
+  if (recentLive && Date.now() < nextClaudeFetchAt) return { ...recentLive, source: 'recent-live-cache', stale: true, message: lastClaudeProblem };
 
   if (Date.now() >= nextClaudeFetchAt) {
     try {
@@ -422,6 +453,7 @@ export async function readClaudeUsage(claudeHome = process.env.CLAUDE_HOME || pa
       }
     } catch (error) {
       nextClaudeFetchAt = Date.now() + (error?.status === 429 ? 5 * 60 * 1000 : CLAUDE_FETCH_INTERVAL_MS);
+      lastClaudeProblem = await claudeLoggedIn(claudeHome) ? CLAUDE_TEMPORARY_PROBLEM : CLAUDE_LOGIN_HINT;
     }
   }
 
@@ -430,7 +462,7 @@ export async function readClaudeUsage(claudeHome = process.env.CLAUDE_HOME || pa
       ...recentLive,
       source: 'recent-live-cache',
       stale: recentAge > CLAUDE_FETCH_INTERVAL_MS,
-      message: '即時端點暫時無法更新，保留最後一次成功資料。'
+      message: lastClaudeProblem
     };
   }
 
@@ -438,7 +470,7 @@ export async function readClaudeUsage(claudeHome = process.env.CLAUDE_HOME || pa
   try {
     cache = JSON.parse(await fs.readFile(cachePath, 'utf8'));
   } catch {
-    const credentialsPresent = await fs.access(path.join(claudeHome, '.credentials.json')).then(() => true).catch(() => false);
+    const credentialsPresent = await claudeLoggedIn(claudeHome);
     return {
       id: 'claude',
       name: 'Claude',
@@ -450,7 +482,7 @@ export async function readClaudeUsage(claudeHome = process.env.CLAUDE_HOME || pa
       message: !cliPath && !credentialsPresent
         ? '這台電腦尚未安裝 Claude Code；若已安裝 Claude 桌面版，請先更新至含 Claude Code 的版本。'
         : cliPath && !credentialsPresent
-          ? '已找到 Claude 桌面版／Claude Code，但尚未連結 Claude Code 帳號。請重新執行「啟動儀表板.bat」，並依提示完成授權。'
+          ? CLAUDE_LOGIN_HINT
           : 'Claude Code 已登入，但暫時無法取得即時用量，也沒有可用的本機快取。',
       windows: []
     };
@@ -467,7 +499,9 @@ export async function readClaudeUsage(claudeHome = process.env.CLAUDE_HOME || pa
     source: 'cache',
     stale: true,
     windows: Object.entries(rateLimits).map(([id, value]) => windowFromClaude(id, value)).filter(Boolean),
-    message: Object.keys(rateLimits).length ? '即時查詢失敗，目前顯示本機舊快取。' : 'Claude 快取中還沒有額度資料。'
+    message: lastClaudeProblem === CLAUDE_LOGIN_HINT
+      ? `${CLAUDE_LOGIN_HINT} 目前顯示本機舊快取。`
+      : Object.keys(rateLimits).length ? '即時查詢失敗，目前顯示本機舊快取。' : 'Claude 快取中還沒有額度資料。'
   };
 }
 
@@ -624,4 +658,4 @@ export async function readAllUsage() {
   };
 }
 
-export const testing = { isoFromUnix, windowFromCodex, windowFromClaude, individualCodexWindows, liveClaudeWindows, findClaudeCli, antigravityWindows };
+export const testing = { isoFromUnix, windowFromCodex, windowFromClaude, individualCodexWindows, liveClaudeWindows, findClaudeCli, antigravityWindows, codexLogFallback };
