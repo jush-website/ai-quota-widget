@@ -110,8 +110,8 @@ $Sampler.Runspace = $Runspace
       </Border>
       <StackPanel Name="Body" Grid.Column="1" Margin="10,10,12,10">
         <Grid Margin="0,0,0,6">
-          <TextBlock Text="AI 額度 · 效能" Foreground="#99FFFFFF" FontSize="11"/>
-          <TextBlock Name="Status" HorizontalAlignment="Right" Foreground="#99FFFFFF" FontSize="11"/>
+          <TextBlock Name="TitleText" Text="AI 額度 · 效能" Foreground="#99FFFFFF" FontSize="11"/>
+          <TextBlock Name="Status" HorizontalAlignment="Right" Foreground="#99FFFFFF" FontSize="11" TextTrimming="CharacterEllipsis"/>
         </Grid>
         <WrapPanel Name="Rows"/>
       </StackPanel>
@@ -120,7 +120,7 @@ $Sampler.Runspace = $Runspace
 </Window>
 '@
 $Window = [Windows.Markup.XamlReader]::Load((New-Object Xml.XmlNodeReader $Xaml))
-foreach ($Name in 'Rows', 'Status', 'Handle', 'HandleBody', 'Arrow', 'Dots', 'Body', 'HandleCol', 'HandleRow') {
+foreach ($Name in 'Rows', 'Status', 'TitleText', 'Handle', 'HandleBody', 'Arrow', 'Dots', 'Body', 'HandleCol', 'HandleRow') {
   Set-Variable -Name $Name -Value $Window.FindName($Name)
 }
 $Converter = New-Object Windows.Media.BrushConverter
@@ -375,7 +375,11 @@ function Update-Widget {
   # 需要使用者處理的事（例如 Claude 要重新登入），要跳通知的排前面
   $Needs = @(@($State.usage.providers) | Where-Object { $_ -and $_.attention } | Sort-Object { -not $_.attention.notify }) | Select-Object -First 1
   Check-Attention
-  $Line = if ($State.offline) { @('服務離線', '#99FFFFFF') }
+  # 語音指令的回應：藍字顯示幾秒，蓋過其他狀態；標題暫時讓位
+  $VoiceActive = $VoiceShow -and (Get-Date) -lt $VoiceShow.Until
+  $TitleText.Visibility = if ($VoiceActive) { 'Hidden' } else { 'Visible' }
+  $Line = if ($VoiceActive) { @($VoiceShow.Text, '#60A5FA') }
+    elseif ($State.offline) { @('服務離線', '#99FFFFFF') }
     elseif ($U.status -in 'downloading', 'installing') { @('更新中…', '#FACC15') }
     elseif ($U.status -eq 'error') { @('更新失敗', '#FF5C5C') }
     elseif ($Needs) { @($Needs.attention.text, '#FACC15') }
@@ -577,12 +581,14 @@ function New-ChoiceMenu([string]$Header, [object[]]$Options, [string]$Current, [
   }
   return $Parent
 }
-$StyleMenu = New-ChoiceMenu '樣式' @(@('bar', '條狀'), @('gauge', '指針'), @('text', '純數字')) $Style {
-  param($Value)
+function Set-Style([string]$Value) {
   $script:Style = $Value
   try { Set-Content -LiteralPath $StyleFile -Value $Value -Encoding ascii } catch {}
+  # 語音換樣式時，選單的勾勾也要跟著換
+  foreach ($Other in $StyleMenu.Items) { $Other.IsChecked = ($Other.Tag -eq $Value) }
   Update-Widget
 }
+$StyleMenu = New-ChoiceMenu '樣式' @(@('bar', '條狀'), @('gauge', '指針'), @('text', '純數字')) $Style { param($Value) Set-Style $Value }
 $EdgeMenu = New-ChoiceMenu '位置' @(@('side', '右側'), @('top', '頂部')) $Edge { param($Value) Set-Edge $Value }
 # 顯示項目：每次打開選單時依目前的項目重建，打勾＝顯示；點了不關選單，可以連續勾
 $ShowMenu = New-Object Windows.Controls.MenuItem; $ShowMenu.Header = '顯示項目'
@@ -698,8 +704,278 @@ function Update-LoginItem {
 }
 $Window.Add_Closed({ if ($script:Tray) { $script:Tray.Dispose() } })
 
-$Menu.Add_Opened({ Update-ShowMenu; Update-UpdateItem; Update-LoginItem })
-foreach ($Item in $LoginItem, $CodexLoginItem, $UpdateItem, $Open, $StyleMenu, $EdgeMenu, $ShowMenu, $Corner, $Quit) { $Menu.Items.Add($Item) | Out-Null }
+# ================================================================
+#  語音指令（System.Speech，中文（台灣）離線辨識，只認固定句型）
+#  叫喚詞「欸小工具」（「欸」可省略）＋ 指令。預設關閉；右鍵選單勾「語音指令」才開麥克風，設定存在 .widget-voice
+# ================================================================
+$VoiceFile = Join-Path $PSScriptRoot '.widget-voice'
+$VoiceOn = $false
+try { $VoiceOn = (Get-Content -LiteralPath $VoiceFile -Raw -ErrorAction Stop).Trim() -eq '1' } catch {}
+# 背景執行緒只負責「聽」，把辨識結果丟進佇列；動作一律回到 UI 執行緒做（PowerShell 的事件處理器不能在別的執行緒跑）
+$Voice = [hashtable]::Synchronized(@{
+  Enabled = $VoiceOn; Status = 'off'; Speaking = $false; QuietUntil = [datetime]::MinValue
+  Queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
+})
+$VoiceRunspace = [runspacefactory]::CreateRunspace()
+$VoiceRunspace.Open()
+$VoiceListener = [powershell]::Create()
+$VoiceListener.Runspace = $VoiceRunspace
+[void]$VoiceListener.AddScript({
+  param($V)
+  Add-Type -AssemblyName System.Speech
+  $NS = 'System.Speech.Recognition'
+  # 每個指令：鍵、說法（中間的 | 分隔可互換的詞，依序接起來）
+  $Quota = '還剩多少|剩多少|額度|的額度|額度多少|用了多少|用多少'
+  $Commands = @(
+    @('open', '打開|展開|開啟|顯示'),
+    @('close', '收起來|收起|縮起來|關起來'),
+    @('dashboard', '開儀表板|打開儀表板|開啟儀表板'),
+    @('style-bar', '換成條狀|改成條狀|條狀'),
+    @('style-gauge', '換成指針|改成指針|指針'),
+    @('style-text', '換成數字|改成數字|換成純數字|數字'),
+    @('quota-claude', "Claude|克勞德|克老德", $Quota),
+    @('quota-codex', "Codex|扣德克斯|寇德克斯|扣得克斯", $Quota),
+    @('quota-antigravity', "Antigravity|安提格拉維提|反重力", $Quota),
+    @('next', '下一首|下一首歌|下一個'),
+    @('prev', '上一首|上一首歌|上一個'),
+    @('play', '播放|繼續播放|播放音樂'),
+    @('pause', '暫停|暫停音樂|停止播放'),
+    @('volup', '大聲一點|大聲點|聲音大一點'),
+    @('voldown', '小聲一點|小聲點|聲音小一點'),
+    @('mute', '靜音|取消靜音')
+  )
+  function New-Grammar($Culture, [bool]$WithLatin) {
+    $All = New-Object "$NS.Choices"
+    foreach ($Cmd in $Commands) {
+      $Builder = New-Object "$NS.GrammarBuilder"
+      $Builder.Culture = $Culture
+      $Ok = $true
+      foreach ($Part in $Cmd[1..($Cmd.Count - 1)]) {
+        $Words = @($Part -split '\|' | Where-Object { $WithLatin -or $_ -notmatch '[A-Za-z]' })
+        if ($Words.Count -eq 0) { $Ok = $false; break }
+        $Choice = New-Object "$NS.Choices"
+        $Choice.Add([string[]]$Words)
+        $Builder.Append($Choice)
+      }
+      if (-not $Ok) { continue }
+      $Value = New-Object "$NS.SemanticResultValue" -ArgumentList $Builder, $Cmd[0]
+      $All.Add([System.Speech.Recognition.GrammarBuilder[]]@($Value.ToGrammarBuilder()))
+    }
+    $Root = New-Object "$NS.GrammarBuilder"
+    $Root.Culture = $Culture
+    $Hey = New-Object "$NS.Choices"
+    $Hey.Add([string[]]@('欸', '誒', '哎'))
+    $Root.Append((New-Object "$NS.GrammarBuilder" -ArgumentList $Hey), 0, 1)   # 「欸」可以不說
+    $Root.Append('小工具')
+    $Key = New-Object "$NS.SemanticResultKey" -ArgumentList 'cmd', ([System.Speech.Recognition.GrammarBuilder[]]@((New-Object "$NS.GrammarBuilder" -ArgumentList $All)))
+    $Root.Append($Key.ToGrammarBuilder())
+    $Grammar = New-Object "$NS.Grammar" -ArgumentList $Root
+    $Grammar.Name = 'widget'
+    return $Grammar
+  }
+  function Wait-Retry([int]$Seconds) {
+    for ($I = 0; $I -lt $Seconds * 2 -and $V.Enabled; $I++) { Start-Sleep -Milliseconds 500 }
+  }
+  while ($true) {
+    if (-not $V.Enabled) { $V.Status = 'off'; Start-Sleep -Milliseconds 500; continue }
+    $Info = [System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers() |
+      Where-Object { $_.Culture.Name -eq 'zh-TW' } | Sort-Object { $_.Id -ne 'MS-1028-80-DESK' } | Select-Object -First 1
+    if (-not $Info) { $V.Status = 'norecognizer'; Wait-Retry 30; continue }
+    $Engine = $null
+    try {
+      $Engine = New-Object System.Speech.Recognition.SpeechRecognitionEngine -ArgumentList $Info
+      try { $Engine.SetInputToDefaultAudioDevice() }
+      catch { $V.Status = 'nomic'; $Engine.Dispose(); $Engine = $null; Wait-Retry 30; continue }   # 沒有麥克風：保持開啟，30 秒後再試
+      # 英文產品名稱有的辨識引擎編不進中文文法，失敗就只用中文音譯
+      try { $Engine.LoadGrammar((New-Grammar $Info.Culture $true)) } catch { $Engine.LoadGrammar((New-Grammar $Info.Culture $false)) }
+      $V.Status = 'listening'
+      while ($V.Enabled) {
+        $R = $Engine.Recognize([TimeSpan]::FromSeconds(3))
+        if (-not $R) { continue }
+        # 自己正在朗讀時聽到的不算
+        if ($V.Speaking -or (Get-Date) -lt $V.QuietUntil) { continue }
+        if ($R.Confidence -lt 0.55) { continue }
+        $Cmd = $null
+        try { $Cmd = [string]$R.Semantics['cmd'].Value } catch {}
+        if ($Cmd) { $V.Queue.Enqueue(@($Cmd, $R.Text, $R.Confidence)) }
+      }
+    } catch {
+      # 麥克風被拔掉等：回到開頭重試
+      $V.Status = 'nomic'
+      Wait-Retry 30
+    } finally {
+      if ($Engine) { try { $Engine.Dispose() } catch {} }
+    }
+  }
+}).AddArgument($Voice)
+[void]$VoiceListener.BeginInvoke()
+
+# 中文朗讀：zh-TW 語音（Microsoft Hanhan）；沒有就只在標題列顯示文字
+Add-Type -AssemblyName System.Speech
+$Synth = $null
+try { $Synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; $Synth.SetOutputToDefaultAudioDevice() } catch { $Synth = $null }
+function Get-ZhVoice {
+  if (-not $script:Synth) { return $null }
+  return $script:Synth.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -eq 'zh-TW' } |
+    Sort-Object { $_.VoiceInfo.Name -notmatch 'Hanhan' } | Select-Object -First 1
+}
+function Invoke-Say([string]$Text) {
+  $Zh = Get-ZhVoice
+  if (-not $Zh) { return $false }
+  try {
+    $script:Synth.SelectVoice($Zh.VoiceInfo.Name)
+    $script:Synth.SpeakAsyncCancelAll()
+    $Voice.Speaking = $true
+    [void]$script:Synth.SpeakAsync($Text)
+    return $true
+  } catch { return $false }
+}
+
+# 標題列用藍字顯示幾秒
+$VoiceShow = @{ Text = ''; Until = [datetime]::MinValue }
+function Show-VoiceText([string]$Text, [double]$Seconds = 4) {
+  $VoiceShow.Text = $Text
+  $VoiceShow.Until = (Get-Date).AddSeconds($Seconds)
+  Update-Widget
+}
+
+# 鍵盤媒體鍵：Spotify、YouTube（瀏覽器）等有接 Windows 媒體控制的播放器都吃
+Add-Type -Namespace Win32 -Name MediaKeys -MemberDefinition '[DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);'
+function Send-MediaKey([byte]$Vk, [int]$Times = 1) {
+  for ($I = 0; $I -lt $Times; $I++) {
+    [Win32.MediaKeys]::keybd_event($Vk, 0, 0, [UIntPtr]::Zero)
+    [Win32.MediaKeys]::keybd_event($Vk, 0, 2, [UIntPtr]::Zero)
+  }
+}
+
+# 額度：念出各額度用了多少 %，舊資料要說明
+function Get-QuotaReport([string]$Id) {
+  $Names = @{ claude = 'Claude'; codex = 'Codex'; antigravity = 'Antigravity' }
+  $Name = $Names[$Id]
+  $P = @($State.usage.providers) | Where-Object { $_ -and $_.id -eq $Id } | Select-Object -First 1
+  if (-not $P -or $P.installed -eq $false) { return @{ Say = "這台電腦沒有安裝 $Name。"; Show = "$Name：未安裝" } }
+  if (-not $P.available -or @($P.windows).Count -eq 0) { return @{ Say = "$Name 目前沒有額度資料。"; Show = "$Name：沒有資料" } }
+  $Said = New-Object Collections.Generic.List[string]
+  $Shown = New-Object Collections.Generic.List[string]
+  foreach ($L in @($P.windows)) {
+    if ($Id -eq 'antigravity') {
+      $Label = (($L.label -split '\s+') | Where-Object { $_ -notmatch '^(Claude|Gemini)$' -and $_ -notmatch '\d' }) -join ' '
+      if (-not $Label) { $Label = $L.label }
+    } else {
+      $Label = ($L.label -replace '額度', '' -replace '每週 · 所有模型', '每週' -replace '每週 · ', '每週 ').Trim()
+    }
+    if ($null -eq $L.usedPercent) { $Said.Add("$Label 沒有資料"); $Shown.Add("$Label —"); continue }
+    $Pct = [math]::Round([double]$L.usedPercent)
+    $Said.Add("$Label 用了百分之$Pct")
+    $Shown.Add("$Label $Pct%")
+  }
+  $Say = "$Name，" + ($Said -join '，') + '。'
+  $Show = "$Name " + ($Shown -join ' · ')
+  if ($P.stale) {
+    $Say += '注意，這是舊資料' + $(if ($P.message) { "，$($P.message)" } else { '' }) + '。'
+    $Show += '（舊資料）'
+  }
+  return @{ Say = $Say; Show = $Show }
+}
+
+function Invoke-VoiceCommand([string]$Cmd) {
+  # 動作本身的輸出一律丟掉，只留下要顯示的文字
+  $Label = $null
+  switch ($Cmd) {
+    'open' { Set-Pinned $true | Out-Null; $Label = '展開' }
+    'close' { Set-Pinned $false | Out-Null; $Label = '收起來' }
+    'dashboard' { Start-Process "http://localhost:$Port"; $Label = '開啟儀表板' }
+    'style-bar' { Set-Style 'bar' | Out-Null; $Label = '換成條狀' }
+    'style-gauge' { Set-Style 'gauge' | Out-Null; $Label = '換成指針' }
+    'style-text' { Set-Style 'text' | Out-Null; $Label = '換成數字' }
+    'next' { Send-MediaKey 0xB0; $Label = '下一首' }
+    'prev' { Send-MediaKey 0xB1; $Label = '上一首' }
+    'play' { Send-MediaKey 0xB3; $Label = '播放' }          # 播放／暫停是同一個鍵
+    'pause' { Send-MediaKey 0xB3; $Label = '暫停' }
+    'volup' { Send-MediaKey 0xAF 5; $Label = '大聲一點' }   # 每按一下約 2%
+    'voldown' { Send-MediaKey 0xAE 5; $Label = '小聲一點' }
+    'mute' { Send-MediaKey 0xAD; $Label = '靜音' }
+  }
+  if ($Cmd -like 'quota-*') {
+    $Report = Get-QuotaReport ($Cmd.Substring(6))
+    $Spoken = Invoke-Say $Report.Say
+    Show-VoiceText $Report.Show $(if ($Spoken) { 6 } else { 10 })
+    return
+  }
+  if ($Label) { Show-VoiceText ([string][char]0xD83C + [char]0xDF99 + ' ' + $Label) }
+}
+
+function Test-ZhRecognizer {
+  return [bool](@([System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers() | Where-Object { $_.Culture.Name -eq 'zh-TW' }).Count)
+}
+$VoicePrompted = $false
+function Request-ZhSpeech {
+  # 缺少中文語音辨識：詢問是否安裝（需要系統管理員權限；MSI 本身不需要）
+  if ($script:VoicePrompted) { return }
+  $script:VoicePrompted = $true
+  $Text = "這台電腦沒有「中文（台灣）」語音辨識，語音指令需要它。`n`n要現在安裝嗎？會以系統管理員身分安裝 Windows 的中文語音辨識與中文朗讀（需要網路，約數分鐘）。`n安裝完成後語音指令會自動開始，不用重開小工具。"
+  if ([System.Windows.MessageBox]::Show($Window, $Text, 'AI 額度小工具 · 語音指令', 'YesNo', 'Question') -ne 'Yes') {
+    Show-VoiceText '語音：缺少中文語音辨識' 6
+    return
+  }
+  $Script = "Add-WindowsCapability -Online -Name 'Language.Speech~~~zh-TW~0.0.1.0'; Add-WindowsCapability -Online -Name 'Language.TextToSpeech~~~zh-TW~0.0.1.0'; Write-Host ''; Write-Host '安裝完成，可以關閉這個視窗。'; Read-Host '按 Enter 關閉'"
+  try {
+    Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"$Script`""
+    Show-VoiceText '語音：正在安裝中文語音…' 8
+  } catch { Show-VoiceText '語音：已取消安裝' 6 }   # 使用者在 UAC 按了「否」
+}
+
+function Set-Voice([bool]$On) {
+  $Voice.Enabled = $On
+  try { Set-Content -LiteralPath $VoiceFile -Value ([int]$On) -Encoding ascii } catch {}
+  if (-not $On) { Show-VoiceText '語音指令已關閉' 3; return }
+  if (-not (Test-ZhRecognizer)) { Request-ZhSpeech; return }
+  Show-VoiceText '語音指令：說「欸小工具」＋指令' 5
+}
+
+$VoiceItem = New-Object Windows.Controls.MenuItem
+$VoiceItem.Header = '語音指令'
+$VoiceItem.IsCheckable = $true
+$VoiceItem.IsChecked = $VoiceOn
+$VoiceItem.ToolTip = "說「欸小工具」再接指令（「欸」可省略）：`n打開／收起來／開儀表板／換成條狀・指針・數字`nClaude 還剩多少／Codex 額度／Antigravity 額度`n下一首／上一首／播放／暫停／大聲一點／小聲一點／靜音"
+$VoiceItem.Add_Click({ Set-Voice $VoiceItem.IsChecked })
+function Update-VoiceItem {
+  $VoiceItem.IsChecked = $Voice.Enabled
+  $VoiceItem.Header = switch ($Voice.Status) {
+    'nomic' { '語音指令（沒有麥克風，接上後自動開始）' }
+    'norecognizer' { '語音指令（缺少中文語音辨識）' }
+    'listening' { '語音指令（聆聽中）' }
+    default { '語音指令' }
+  }
+}
+
+$LastVoiceStatus = ''
+$VoiceTimer = New-Object Windows.Threading.DispatcherTimer
+$VoiceTimer.Interval = [TimeSpan]::FromMilliseconds(200)
+$VoiceTimer.Add_Tick({
+  $Speaking = $script:Synth -and $script:Synth.State -eq 'Speaking'
+  if ($Voice.Speaking -and -not $Speaking) { $Voice.QuietUntil = (Get-Date).AddMilliseconds(800) }
+  $Voice.Speaking = $Speaking
+  $Item = $null
+  while ($Voice.Queue.TryDequeue([ref]$Item)) { Invoke-VoiceCommand $Item[0] }
+  # 狀態改變時提示一次
+  if ($Voice.Status -ne $script:LastVoiceStatus) {
+    $Was = $script:LastVoiceStatus
+    $script:LastVoiceStatus = $Voice.Status
+    if ($Voice.Enabled) {
+      switch ($Voice.Status) {
+        'nomic' { Show-VoiceText '語音：沒有麥克風，接上後自動開始' 5 }
+        'norecognizer' { Request-ZhSpeech }
+        'listening' { if ($Was -in 'nomic', 'norecognizer') { Show-VoiceText '語音指令已開始' 3 } }
+      }
+    }
+  }
+})
+$VoiceTimer.Start()
+$Window.Add_Closed({ $Voice.Enabled = $false; if ($script:Synth) { try { $script:Synth.Dispose() } catch {} } })
+
+$Menu.Add_Opened({ Update-ShowMenu; Update-UpdateItem; Update-LoginItem; Update-VoiceItem })
+foreach ($Item in $LoginItem, $CodexLoginItem, $UpdateItem, $Open, $StyleMenu, $EdgeMenu, $ShowMenu, $VoiceItem, $Corner, $Quit) { $Menu.Items.Add($Item) | Out-Null }
 $Window.ContextMenu = $Menu
 
 $Timer = New-Object Windows.Threading.DispatcherTimer

@@ -11,6 +11,7 @@ logs/
 .widget-left
 .widget-edge
 .widget-hidden
+.widget-voice
 
 # MSI 建置產物（由 installer\build.ps1 產生，發布到 Releases）
 installer/out/
