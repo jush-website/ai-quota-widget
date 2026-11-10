@@ -716,12 +716,23 @@ $Voice = [hashtable]::Synchronized(@{
   Enabled = $VoiceOn; Status = 'off'; Speaking = $false; QuietUntil = [datetime]::MinValue
   Queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
 })
+# 語音的記錄檔：辨識不到時可以看是卡在哪一步
+$VoiceLog = Join-Path $PSScriptRoot 'logs\voice.log'
+try { New-Item -ItemType Directory -Force -Path (Split-Path $VoiceLog) | Out-Null } catch {}
 $VoiceRunspace = [runspacefactory]::CreateRunspace()
 $VoiceRunspace.Open()
 $VoiceListener = [powershell]::Create()
 $VoiceListener.Runspace = $VoiceRunspace
 [void]$VoiceListener.AddScript({
-  param($V)
+  param($V, $LogPath)
+  function Write-VoiceLog([string]$Message) {
+    try {
+      $Info = Get-Item -LiteralPath $LogPath -ErrorAction SilentlyContinue
+      if ($Info -and $Info.Length -gt 512KB) { Remove-Item -LiteralPath $LogPath -Force }
+      Add-Content -LiteralPath $LogPath -Value ('{0:yyyy-MM-dd HH:mm:ss}  {1}' -f (Get-Date), $Message) -Encoding UTF8
+    } catch {}
+  }
+  try {
   Add-Type -AssemblyName System.Speech
   $NS = 'System.Speech.Recognition'
   # 每個指令：鍵、說法（中間的 | 分隔可互換的詞，依序接起來）
@@ -744,8 +755,9 @@ $VoiceListener.Runspace = $VoiceRunspace
     @('voldown', '小聲一點|小聲點|聲音小一點'),
     @('mute', '靜音|取消靜音')
   )
-  function New-Grammar($Culture, [bool]$WithLatin) {
-    $All = New-Object "$NS.Choices"
+  # 三組文法：「欸小工具＋指令」一口氣說完；只說「欸小工具」先喚醒；喚醒後 8 秒內只說指令
+  function New-CommandBuilder($Culture, [bool]$WithLatin) {
+    $Choices = New-Object "$NS.Choices"
     foreach ($Cmd in $Commands) {
       $Builder = New-Object "$NS.GrammarBuilder"
       $Builder.Culture = $Culture
@@ -759,55 +771,106 @@ $VoiceListener.Runspace = $VoiceRunspace
       }
       if (-not $Ok) { continue }
       $Value = New-Object "$NS.SemanticResultValue" -ArgumentList $Builder, $Cmd[0]
-      $All.Add([System.Speech.Recognition.GrammarBuilder[]]@($Value.ToGrammarBuilder()))
+      $Choices.Add([System.Speech.Recognition.GrammarBuilder[]]@($Value.ToGrammarBuilder()))
     }
+    $Key = New-Object "$NS.SemanticResultKey" -ArgumentList 'cmd', ([System.Speech.Recognition.GrammarBuilder[]]@((New-Object "$NS.GrammarBuilder" -ArgumentList $Choices)))
+    return $Key.ToGrammarBuilder()
+  }
+  function New-WakeBuilder($Culture) {
     $Root = New-Object "$NS.GrammarBuilder"
     $Root.Culture = $Culture
     $Hey = New-Object "$NS.Choices"
     $Hey.Add([string[]]@('欸', '誒', '哎'))
     $Root.Append((New-Object "$NS.GrammarBuilder" -ArgumentList $Hey), 0, 1)   # 「欸」可以不說
     $Root.Append('小工具')
-    $Key = New-Object "$NS.SemanticResultKey" -ArgumentList 'cmd', ([System.Speech.Recognition.GrammarBuilder[]]@((New-Object "$NS.GrammarBuilder" -ArgumentList $All)))
-    $Root.Append($Key.ToGrammarBuilder())
-    $Grammar = New-Object "$NS.Grammar" -ArgumentList $Root
-    $Grammar.Name = 'widget'
-    return $Grammar
+    return $Root
+  }
+  function New-Grammars($Culture, [bool]$WithLatin) {
+    $Full = New-WakeBuilder $Culture
+    $Full.Append((New-CommandBuilder $Culture $WithLatin))
+    $Bare = New-Object "$NS.GrammarBuilder"
+    $Bare.Culture = $Culture
+    $Bare.Append((New-CommandBuilder $Culture $WithLatin))
+    $List = @()
+    foreach ($Pair in @(@('widget', $Full), @('wake', (New-WakeBuilder $Culture)), @('bare', $Bare))) {
+      $G = New-Object "$NS.Grammar" -ArgumentList $Pair[1]
+      $G.Name = $Pair[0]
+      $List += $G
+    }
+    return $List
+  }
+  function Add-Grammars($Engine, $Culture) {
+    try { foreach ($G in (New-Grammars $Culture $true)) { $Engine.LoadGrammar($G) } }
+    catch {
+      # 英文產品名稱有的辨識引擎編不進中文文法，失敗就只用中文音譯
+      Write-VoiceLog "含英文的文法載入失敗，改用中文音譯：$($_.Exception.Message)"
+      $Engine.UnloadAllGrammars()
+      foreach ($G in (New-Grammars $Culture $false)) { $Engine.LoadGrammar($G) }
+    }
   }
   function Wait-Retry([int]$Seconds) {
     for ($I = 0; $I -lt $Seconds * 2 -and $V.Enabled; $I++) { Start-Sleep -Milliseconds 500 }
   }
+  $Installed = @([System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers())
+  Write-VoiceLog ('語音執行緒啟動；已安裝的辨識引擎：' + $(if ($Installed.Count) { ($Installed | ForEach-Object { "$($_.Id) ($($_.Culture.Name))" }) -join '、' } else { '（沒有）' }))
   while ($true) {
     if (-not $V.Enabled) { $V.Status = 'off'; Start-Sleep -Milliseconds 500; continue }
     $Info = [System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers() |
       Where-Object { $_.Culture.Name -eq 'zh-TW' } | Sort-Object { $_.Id -ne 'MS-1028-80-DESK' } | Select-Object -First 1
-    if (-not $Info) { $V.Status = 'norecognizer'; Wait-Retry 30; continue }
+    if (-not $Info) {
+      if ($V.Status -ne 'norecognizer') { Write-VoiceLog '找不到中文（台灣）語音辨識引擎' }
+      $V.Status = 'norecognizer'; Wait-Retry 30; continue
+    }
     $Engine = $null
     try {
       $Engine = New-Object System.Speech.Recognition.SpeechRecognitionEngine -ArgumentList $Info
       try { $Engine.SetInputToDefaultAudioDevice() }
-      catch { $V.Status = 'nomic'; $Engine.Dispose(); $Engine = $null; Wait-Retry 30; continue }   # 沒有麥克風：保持開啟，30 秒後再試
-      # 英文產品名稱有的辨識引擎編不進中文文法，失敗就只用中文音譯
-      try { $Engine.LoadGrammar((New-Grammar $Info.Culture $true)) } catch { $Engine.LoadGrammar((New-Grammar $Info.Culture $false)) }
+      catch {   # 沒有麥克風：保持開啟，30 秒後再試
+        if ($V.Status -ne 'nomic') { Write-VoiceLog "沒有可用的麥克風：$($_.Exception.Message)" }
+        $V.Status = 'nomic'; $Engine.Dispose(); $Engine = $null; Wait-Retry 30; continue
+      }
+      Add-Grammars $Engine $Info.Culture
+      $WakeUntil = [datetime]::MinValue
       $V.Status = 'listening'
+      Write-VoiceLog "開始聆聽（$($Info.Id)，$($Info.Culture.Name)）"
       while ($V.Enabled) {
         $R = $Engine.Recognize([TimeSpan]::FromSeconds(3))
         if (-not $R) { continue }
         # 自己正在朗讀時聽到的不算
         if ($V.Speaking -or (Get-Date) -lt $V.QuietUntil) { continue }
-        if ($R.Confidence -lt 0.55) { continue }
+        $Kind = $R.Grammar.Name
         $Cmd = $null
         try { $Cmd = [string]$R.Semantics['cmd'].Value } catch {}
-        if ($Cmd) { $V.Queue.Enqueue(@($Cmd, $R.Text, $R.Confidence)) }
+        Write-VoiceLog ('聽到「{0}」信心 {1:0.00}（{2}）→ {3}' -f $R.Text, $R.Confidence, $Kind, $(if ($Cmd) { $Cmd } else { '—' }))
+        if ($Kind -eq 'wake') {
+          if ($R.Confidence -lt 0.35) { continue }
+          $WakeUntil = (Get-Date).AddSeconds(8)
+          $V.Queue.Enqueue(@('wake', $R.Text, $R.Confidence))
+          continue
+        }
+        # 沒有說「小工具」的指令：只在剛喚醒的 8 秒內有效（避免平常講話被當成指令）
+        if ($Kind -eq 'bare' -and (Get-Date) -gt $WakeUntil) { continue }
+        if (-not $Cmd) { continue }
+        # 信心太低：不執行，但在標題列提示「沒聽清楚」
+        if ($R.Confidence -lt 0.35) { $V.Queue.Enqueue(@('unclear', $R.Text, $R.Confidence)); continue }
+        $WakeUntil = [datetime]::MinValue
+        $V.Queue.Enqueue(@($Cmd, $R.Text, $R.Confidence))
       }
     } catch {
       # 麥克風被拔掉等：回到開頭重試
+      Write-VoiceLog "辨識錯誤，30 秒後重試：$($_.Exception.Message)"
       $V.Status = 'nomic'
       Wait-Retry 30
     } finally {
       if ($Engine) { try { $Engine.Dispose() } catch {} }
     }
   }
-}).AddArgument($Voice)
+  } catch {
+    # 語音執行緒整個掛掉（例如 System.Speech 載入失敗）：記下原因，選單顯示「無法啟動」
+    Write-VoiceLog "語音執行緒停止：$($_.Exception.GetType().Name): $($_.Exception.Message)"
+    $V.Status = 'error'
+  }
+}).AddArgument($Voice).AddArgument($VoiceLog)
 [void]$VoiceListener.BeginInvoke()
 
 # 中文朗讀：zh-TW 語音（Microsoft Hanhan）；沒有就只在標題列顯示文字
@@ -878,10 +941,12 @@ function Get-QuotaReport([string]$Id) {
   return @{ Say = $Say; Show = $Show }
 }
 
-function Invoke-VoiceCommand([string]$Cmd) {
+function Invoke-VoiceCommand([string]$Cmd, [string]$Heard = '') {
   # 動作本身的輸出一律丟掉，只留下要顯示的文字
   $Label = $null
   switch ($Cmd) {
+    'wake' { try { [System.Media.SystemSounds]::Asterisk.Play() } catch {}; Show-VoiceText ([string][char]0xD83C + [char]0xDF99 + ' 在聽，請說指令…') 8; return }
+    'unclear' { Show-VoiceText ('沒聽清楚，再說一次' + $(if ($Heard) { "（$Heard）" } else { '' })) 3; return }
     'open' { Set-Pinned $true | Out-Null; $Label = '展開' }
     'close' { Set-Pinned $false | Out-Null; $Label = '收起來' }
     'dashboard' { Start-Process "http://localhost:$Port"; $Label = '開啟儀表板' }
@@ -945,6 +1010,7 @@ function Update-VoiceItem {
     'nomic' { '語音指令（沒有麥克風，接上後自動開始）' }
     'norecognizer' { '語音指令（缺少中文語音辨識）' }
     'listening' { '語音指令（聆聽中）' }
+    'error' { '語音指令（無法啟動，見 logs\voice.log）' }
     default { '語音指令' }
   }
 }
@@ -957,7 +1023,7 @@ $VoiceTimer.Add_Tick({
   if ($Voice.Speaking -and -not $Speaking) { $Voice.QuietUntil = (Get-Date).AddMilliseconds(800) }
   $Voice.Speaking = $Speaking
   $Item = $null
-  while ($Voice.Queue.TryDequeue([ref]$Item)) { Invoke-VoiceCommand $Item[0] }
+  while ($Voice.Queue.TryDequeue([ref]$Item)) { Invoke-VoiceCommand $Item[0] $Item[1] }
   # 狀態改變時提示一次
   if ($Voice.Status -ne $script:LastVoiceStatus) {
     $Was = $script:LastVoiceStatus
@@ -967,6 +1033,7 @@ $VoiceTimer.Add_Tick({
         'nomic' { Show-VoiceText '語音：沒有麥克風，接上後自動開始' 5 }
         'norecognizer' { Request-ZhSpeech }
         'listening' { if ($Was -in 'nomic', 'norecognizer') { Show-VoiceText '語音指令已開始' 3 } }
+        'error' { Show-VoiceText '語音指令無法啟動（見 logs\voice.log）' 8 }
       }
     }
   }
